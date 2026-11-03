@@ -18,6 +18,7 @@ Env vars:
   STATE_FILE           default ./state.json
 """
 
+import html
 import json
 import logging
 import os
@@ -135,7 +136,7 @@ def check(ticker, state, errors):
         first = errors.setdefault(ticker, {"since": time.time(), "notified": False})
         log.warning("%s fetch failed: %s", ticker, e)
         if not first["notified"] and time.time() - first["since"] > ERROR_ALERT_AFTER:
-            send_telegram(f"⚠️ Can't fetch <b>${ticker}</b> price for 15+ min: {e}")
+            send_telegram(f"⚠️ Can't fetch <b>${ticker}</b> price for 15+ min: {html.escape(str(e))}")
             first["notified"] = True
         return False
 
@@ -180,7 +181,7 @@ def main():
                 p, _, sess = fetch_price(t)
                 lines.append(f"${t}: ${fmt_price(p)} ({sess})")
             except Exception as e:
-                lines.append(f"${t}: fetch error ({e})")
+                lines.append(f"${t}: fetch error ({html.escape(str(e))})")
         send_telegram(f"✅ Price alert bot started. Alerts every ±{THRESHOLD * 100:g}%.\n" + "\n".join(lines))
 
     started = time.time()
