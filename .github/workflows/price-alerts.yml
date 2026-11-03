@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}   # latest commit on the branch, so saved prices are picked up
 
       - uses: actions/setup-python@v5
         with:
