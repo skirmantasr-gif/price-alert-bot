@@ -2,7 +2,7 @@
 """
 Stock price alert bot -> Telegram.
 
-Watches tickers (default: VNDA, ORCL, VRRM) and sends a Telegram message every
+Watches tickers (default: 14 tickers, see TICKERS) and sends a Telegram message every
 time the price moves THRESHOLD_PCT (default 2%) up or down from the price of the
 last alert. After each alert the reference price resets to the current price,
 so you get one message per 2% step in either direction.
@@ -12,7 +12,7 @@ Standard library only - no pip install needed.
 Env vars:
   TELEGRAM_BOT_TOKEN   (required) token from @BotFather
   TELEGRAM_CHAT_ID     (required) your chat id (see README)
-  TICKERS              comma list, default "VNDA,ORCL,VRRM"
+  TICKERS              comma list, default "GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA"
   THRESHOLD_PCT        default 2
   POLL_SECONDS         default 60
   STATE_FILE           default ./state.json
@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-TICKERS = [t.strip().upper() for t in os.environ.get("TICKERS", "VNDA,ORCL,VRRM").split(",") if t.strip()]
+TICKERS = [t.strip().upper() for t in os.environ.get("TICKERS", "GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA").split(",") if t.strip()]
 THRESHOLD = float(os.environ.get("THRESHOLD_PCT", "2")) / 100.0
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 STATE_FILE = os.environ.get("STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"))
@@ -120,6 +120,10 @@ def save_state(state):
 
 
 # ---------------------------------------------------------------- main loop
+def fmt_price(p):
+    return f"{p:.4f}" if p < 1 else f"{p:.2f}"
+
+
 def fmt_pct(x):
     return f"{x * 100:+.2f}%"
 
@@ -137,7 +141,7 @@ def check(ticker, state, errors):
 
     err = errors.pop(ticker, None)
     if err and err["notified"]:
-        send_telegram(f"✅ <b>${ticker}</b> price feed recovered: ${price:.2f}")
+        send_telegram(f"✅ <b>${ticker}</b> price feed recovered: ${fmt_price(price)}")
     s = state.get(ticker)
     if s is None:
         state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
@@ -148,9 +152,9 @@ def check(ticker, state, errors):
     change = price / ref - 1
     if abs(change) >= THRESHOLD:
         up = change > 0
-        day = f"\nDay: {fmt_pct(price / prev_close - 1)} vs prev close ${prev_close:.2f}" if prev_close else ""
+        day = f"\nDay: {fmt_pct(price / prev_close - 1)} vs prev close ${fmt_price(prev_close)}" if prev_close else ""
         msg = (f"{'🟢📈' if up else '🔴📉'} <b>${ticker}</b> {'UP' if up else 'DOWN'} {fmt_pct(change)}\n"
-               f"Price: <b>${price:.2f}</b> (was ${ref:.2f} at last alert)"
+               f"Price: <b>${fmt_price(price)}</b> (was ${fmt_price(ref)} at last alert)"
                f"{day}\nSession: {session}")
         if send_telegram(msg):
             state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
@@ -174,7 +178,7 @@ def main():
         for t in TICKERS:
             try:
                 p, _, sess = fetch_price(t)
-                lines.append(f"${t}: ${p:.2f} ({sess})")
+                lines.append(f"${t}: ${fmt_price(p)} ({sess})")
             except Exception as e:
                 lines.append(f"${t}: fetch error ({e})")
         send_telegram(f"✅ Price alert bot started. Alerts every ±{THRESHOLD * 100:g}%.\n" + "\n".join(lines))
