@@ -22,9 +22,10 @@ Env vars:
   NEWS                 "true" (default) = also send news headlines + SEC filings (see news.py)
   NEWS_SECONDS         how often to check news, default 300
   SEC_CONTACT          contact email the SEC requires for EDGAR access; filings are skipped if unset
-  SUBSTACK_COOKIE      optional: value of your substack.sid cookie. When set, every new
-                       message and reply in your Substack group chats is forwarded too.
-  SUBSTACK_CONNECT_SID optional: value of the connect.sid cookie, if your account has one.
+  THIRDPARTY_API, THIRDPARTY_SITE, THIRDPARTY_COOKIE_NAME, THIRDPARTY_COOKIE
+                       optional third-party chat source (set only on the phone). When set, every new
+                       message and reply in your group chats there is forwarded too.
+  THIRDPARTY_CONNECT_SID optional second session cookie, if your account has one.
 """
 
 import html
@@ -57,13 +58,15 @@ STARTUP_MESSAGE = os.environ.get("STARTUP_MESSAGE", "true").lower() == "true"
 ERROR_ALERT_AFTER = 15 * 60  # tell Telegram if a ticker can't be fetched for 15 min
 
 UA = "Mozilla/5.0 (compatible; price-alert-bot/1.0)"
-SUBSTACK_COOKIE = os.environ.get("SUBSTACK_COOKIE", "").strip()
-if SUBSTACK_COOKIE.startswith("substack.sid="):
-    SUBSTACK_COOKIE = SUBSTACK_COOKIE[len("substack.sid="):]
-SUBSTACK_CONNECT_SID = os.environ.get("SUBSTACK_CONNECT_SID", "").strip()
-if SUBSTACK_CONNECT_SID.startswith("connect.sid="):
-    SUBSTACK_CONNECT_SID = SUBSTACK_CONNECT_SID[len("connect.sid="):]
-SUBSTACK_API = "https://substack.com/api/v1"
+TP_API = os.environ.get("THIRDPARTY_API", "").strip().rstrip("/")
+TP_SITE = os.environ.get("THIRDPARTY_SITE", "").strip().rstrip("/")
+TP_COOKIE_NAME = os.environ.get("THIRDPARTY_COOKIE_NAME", "").strip()
+TP_COOKIE = os.environ.get("THIRDPARTY_COOKIE", "").strip() if TP_API else ""
+if TP_COOKIE_NAME and TP_COOKIE.startswith(TP_COOKIE_NAME + "="):
+    TP_COOKIE = TP_COOKIE[len(TP_COOKIE_NAME) + 1:]
+TP_CONNECT_SID = os.environ.get("THIRDPARTY_CONNECT_SID", "").strip()
+if TP_CONNECT_SID.startswith("connect.sid="):
+    TP_CONNECT_SID = TP_CONNECT_SID[len("connect.sid="):]
 NEWS_ON = os.environ.get("NEWS", "true").lower() == "true"
 NEWS_SECONDS = int(os.environ.get("NEWS_SECONDS", "300"))
 # Tickers that keep price alerts but get no news / SEC / insider messages
@@ -201,27 +204,27 @@ def save_state(state):
     os.replace(tmp, STATE_FILE)
 
 
-# ---------------------------------------------------------------- Substack chat
+# ---------------------------------------------------------------- Third-party chat
 # Logs never contain message text, names or chat ids (the repo and its logs are public),
 # and state.json only stores ids/timestamps.
-class SubstackAuthError(Exception):
+class ThirdPartyAuthError(Exception):
     pass
 
 
-def substack_get(path):
-    req = urllib.request.Request(SUBSTACK_API + path, headers={
+def thirdparty_get(path):
+    req = urllib.request.Request(TP_API + path, headers={
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
         "Accept": "application/json",
-        "Cookie": f"substack.sid={SUBSTACK_COOKIE}"
-                  + (f"; connect.sid={SUBSTACK_CONNECT_SID}" if SUBSTACK_CONNECT_SID else ""),
+        "Cookie": f"{TP_COOKIE_NAME}={TP_COOKIE}"
+                  + (f"; connect.sid={TP_CONNECT_SID}" if TP_CONNECT_SID else ""),
     })
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         if e.code in (401, 402, 403):
-            raise SubstackAuthError(f"HTTP {e.code}; {describe_error(e)}")
+            raise ThirdPartyAuthError(f"HTTP {e.code}; {describe_error(e)}")
         raise
 
 
@@ -242,15 +245,15 @@ def describe_error(e):
         try:
             j = json.loads(body)
             msg = j.get("errors", [{}])[0].get("msg") if isinstance(j.get("errors"), list) else (j.get("error") or j.get("status"))
-            parts.append(f"body=SUBSTACK json: {str(msg)[:100]}")
+            parts.append(f"body=API json: {str(msg)[:100]}")
         except Exception:
             t = re.search(r"<title>(.*?)</title>", body, re.S | re.I)
             parts.append("body=" + (f"html title: {' '.join(t.group(1).split())[:80]}" if t else f"text: {' '.join(body.split())[:80]}"))
     return ", ".join(parts)
 
 
-def substack_channels():
-    data = substack_get("/messages/inbox?tab=all")
+def thirdparty_channels():
+    data = thirdparty_get("/messages/inbox?tab=all")
     out = {}
     for t in data.get("threads", []):
         ch = t.get("channel") or {}
@@ -264,7 +267,7 @@ def comments_since(thread_id, since):
     out, cursor = [], since
     for _ in range(20):
         q = "order=asc&" + (f"after={urllib.parse.quote(cursor)}" if cursor else "initial=true")
-        data = substack_get(f"/community/posts/{thread_id}/comments?{q}")
+        data = thirdparty_get(f"/community/posts/{thread_id}/comments?{q}")
         batch = [r for r in data.get("replies", []) if r["comment"]["created_at"] > (since or "")]
         new = [r for r in batch if r["comment"]["created_at"] > (cursor or "")]
         out.extend(new)
@@ -300,7 +303,7 @@ def send_chat_message(header, body, link, pics, loud=True):
         prices = extras.price_context(body, fetch_price, _ticker_cache)
     except Exception as e:
         log.warning("Price context failed: %s", type(e).__name__)
-    footer = (f"\n\n{prices}" if prices else "") + f'\n\n<a href="{html.escape(link)}">Open in Substack</a>'
+    footer = (f"\n\n{prices}" if prices else "") + f'\n\n<a href="{html.escape(link)}">Open in Third party</a>'
     chunks = [html.escape(body[i:i + TG_LIMIT // 2]) for i in range(0, len(body), TG_LIMIT // 2)] or [""]
     for i, chunk in enumerate(chunks):
         text = (header + ("\n\n" + chunk if chunk else "")) if i == 0 else chunk
@@ -318,23 +321,23 @@ def who(user, role):
     return f"⭐ <b>{name}</b>" if role == "admin" else f"<b>{name}</b>"
 
 
-def substack_check(state):
+def thirdparty_check(state):
     """Forward new threads and replies. Returns True if state changed."""
-    sub = state.setdefault("_substack", {})
+    sub = state.setdefault("_thirdparty", {})
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    channels = substack_channels()
+    channels = thirdparty_channels()
     events = []  # (created_at, kind, channel_id, thread, comment)
     changed = False
 
     for cid, cname in channels.items():
         ch = sub.get(cid)
-        data = substack_get(f"/chat/channels/{cid}/posts")
+        data = thirdparty_get(f"/chat/channels/{cid}/posts")
         threads = data.get("threads", [])
         if ch is None:  # first time we see this chat: start from now, don't replay history
             sub[cid] = {"last_post": max([t["communityPost"]["created_at"] for t in threads] or [now_iso]),
                         "since": now_iso, "threads": {}}
             changed = True
-            log.info("Substack: started watching a chat (%d recent threads)", len(threads))
+            log.info("Third party: started watching a chat (%d recent threads)", len(threads))
             continue
         tracked = ch["threads"]
         for t in sorted(threads, key=lambda t: t["communityPost"]["created_at"]):
@@ -363,7 +366,7 @@ def substack_check(state):
         p = t["communityPost"]
         ch = sub[cid]
         cname = html.escape(channels[cid])
-        link = f"https://substack.com/chat/group/{cid}/post/{p['id']}"
+        link = f"{TP_SITE}/chat/group/{cid}/post/{p['id']}"
         if kind == "thread":
             icon = "📢" if p.get("user_pub_role") == "admin" else "💬"
             header = f"{icon} <b>{cname}</b> · {who(t.get('user'), p.get('user_pub_role'))}"
@@ -374,7 +377,7 @@ def substack_check(state):
                       f"<i>reply to: “{html.escape(snippet(p.get('body')))}”</i>")
             ok = send_chat_message(header, c.get("body"), link, images(c), loud=c.get("user_pub_role") == "admin")
         if not ok:
-            log.warning("Substack: Telegram send failed, will retry next poll")
+            log.warning("Third party: Telegram send failed, will retry next poll")
             break
         sent += 1
         changed = True
@@ -385,7 +388,7 @@ def substack_check(state):
             ch["threads"][p["id"]] = max(ch["threads"].get(p["id"], ""), created)
         time.sleep(1.1)  # stay under Telegram's per-channel rate limit
     if sent:
-        log.info("Substack: forwarded %d message(s)", sent)
+        log.info("Third party: forwarded %d message(s)", sent)
     return changed
 
 
@@ -423,13 +426,13 @@ class BatteryWatch:
         pct, charging = st
         if charging:
             if self.warned:
-                send_telegram(f"🔌 Phone is charging ({pct}%). Substack forwarding continues.")
+                send_telegram(f"🔌 Phone is charging ({pct}%). Third-party chat forwarding continues.")
             self.warned.clear()
             return
         for lvl in sorted(BATTERY_WARN, reverse=True):
             if pct <= lvl and lvl not in self.warned:
                 self.warned.update(l for l in BATTERY_WARN if l >= lvl)
-                send_telegram(f"🪫 <b>Phone battery {pct}%</b> — plug it in, or Substack chat "
+                send_telegram(f"🪫 <b>Phone battery {pct}%</b> — plug it in, or third-party chat "
                               f"forwarding stops when it dies.")
                 log.info("Battery warning sent at %d%%", pct)
                 break
@@ -494,8 +497,8 @@ def main():
         sys.exit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.")
 
     state = load_state()
-    if not SUBSTACK_COOKIE:
-        state.pop("_substack", None)  # Substack runs elsewhere; keep chat ids out of the public state file
+    if not TP_COOKIE:
+        state.pop("_thirdparty", None)  # chat forwarding runs elsewhere; keep chat ids out of the saved state
     errors = {}
     log.info("Watching %d tickers, every %ds", len(TICKERS), POLL_SECONDS)  # tickers stay out of the public log
     if watchlist.ERROR or (HEARTBEAT_ROLE == "github" and not TICKERS):
@@ -511,7 +514,7 @@ def main():
                 lines.append(f"${t}: ${fmt_price(p)} ({sess}){step}")
             except Exception as e:
                 lines.append(f"${t}: fetch error ({html.escape(str(e))})")
-        extra = "\nSubstack chat forwarding: ON" if SUBSTACK_COOKIE else ""
+        extra = "\nThird-party chat forwarding: ON" if TP_COOKIE else ""
         if NEWS_ON:
             extra += f"\nNews alerts: ON ({NewsWatcher(NEWS_TICKERS, None).sources_label()})"
             if NEWS_EXCLUDE:
@@ -521,10 +524,10 @@ def main():
             extra += "\nAlso: trading halts ⏸️, unusual volume 📊, catalyst calendar 📅, daily check ☀️"
         send_telegram(f"✅ Price alert bot started.{extra}\n" + "\n".join(lines))
 
-    substack_on = bool(SUBSTACK_COOKIE)
-    substack_fail_since = None
-    if substack_on:
-        log.info("Substack chat forwarding enabled")
+    thirdparty_on = bool(TP_COOKIE)
+    thirdparty_fail_since = None
+    if thirdparty_on:
+        log.info("Third-party chat forwarding enabled")
 
     news = NewsWatcher(NEWS_TICKERS, send_telegram) if NEWS_ON else None
     last_news = 0
@@ -532,7 +535,7 @@ def main():
     battery = BatteryWatch()
     halts = extras.HaltWatcher(TICKERS, send_telegram)
     volume = extras.VolumeWatcher(http_get_json, send_telegram)
-    heartbeat = extras.Heartbeat(HEARTBEAT_ROLE, telegram_api, send_telegram, substack_ok=lambda: substack_on)
+    heartbeat = extras.Heartbeat(HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on)
     started = time.time()
     while True:
         battery.check()
@@ -550,24 +553,24 @@ def main():
                 changed |= news.check(state)
             except Exception as e:
                 log.warning("News check failed: %s", type(e).__name__)
-        if substack_on:
+        if thirdparty_on:
             try:
-                changed |= substack_check(state)
-                if substack_fail_since == "notified":
-                    send_telegram("✅ Substack chat forwarding recovered.")
-                substack_fail_since = None
-            except SubstackAuthError as e:
-                log.warning("Substack login rejected (%s); forwarding paused until next run", e)
-                send_telegram("⚠️ <b>Substack refused the request</b> — chat messages are NOT being forwarded.\n"
+                changed |= thirdparty_check(state)
+                if thirdparty_fail_since == "notified":
+                    send_telegram("✅ Third-party chat forwarding recovered.")
+                thirdparty_fail_since = None
+            except ThirdPartyAuthError as e:
+                log.warning("Third party login rejected (%s); forwarding paused until next run", e)
+                send_telegram("⚠️ <b>Third party refused the request</b> — chat messages are NOT being forwarded.\n"
                               f"{html.escape(str(e))}")
-                substack_on = False
+                thirdparty_on = False
             except Exception as e:
-                log.warning("Substack check failed: %s", type(e).__name__)
-                if substack_fail_since is None:
-                    substack_fail_since = time.time()
-                elif substack_fail_since != "notified" and time.time() - substack_fail_since > ERROR_ALERT_AFTER:
-                    send_telegram("⚠️ Can't reach Substack chat for 15+ min; will keep trying.")
-                    substack_fail_since = "notified"
+                log.warning("Third party check failed: %s", type(e).__name__)
+                if thirdparty_fail_since is None:
+                    thirdparty_fail_since = time.time()
+                elif thirdparty_fail_since != "notified" and time.time() - thirdparty_fail_since > ERROR_ALERT_AFTER:
+                    send_telegram("⚠️ Can't reach the third-party chat for 15+ min; will keep trying.")
+                    thirdparty_fail_since = "notified"
         if changed:
             save_state(state)
         if MAX_RUNTIME and time.time() - started + POLL_SECONDS >= MAX_RUNTIME:

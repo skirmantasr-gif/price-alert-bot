@@ -6,7 +6,7 @@ Extra alert features:
   - unusual volume
   - watchdog: GitHub and the phone check on each other + a daily status message
   - catalyst calendar (earnings / FDA dates found in news headlines)
-  - current price of tickers mentioned in forwarded Substack posts
+  - current price of tickers mentioned in forwarded third-party posts
 
 Logs never contain tickers, headlines or chat text (the repo and its logs are public).
 """
@@ -370,11 +370,11 @@ class Heartbeat:
     """GitHub writes its heartbeat into the bot's description, the phone into the bot's short description
     (both use the same Telegram bot), and each side warns when the other has gone quiet."""
 
-    def __init__(self, role, api, send, substack_ok=lambda: True):
+    def __init__(self, role, api, send, thirdparty_ok=lambda: True):
         self.role = role
         self.api = api
         self.send = send
-        self.substack_ok = substack_ok
+        self.thirdparty_ok = thirdparty_ok
         self.last = 0
 
     def check(self, state):
@@ -394,11 +394,11 @@ class Heartbeat:
             self.api("setMyDescription", {"description": f"Status (auto-updated): GitHub price/news bot OK at {iso}"})
             other = self.api("getMyShortDescription", {}) or {}
             text = other.get("short_description", "")
-            name, fix = "Phone", ("Substack chats are probably NOT being forwarded. Check that the phone is on, "
+            name, fix = "Phone", ("Third-party chats are probably NOT being forwarded. Check that the phone is on, "
                                   "on Wi-Fi and Termux is running (reboot the phone if unsure).")
         else:
-            sub = "OK" if self.substack_ok() else "LOGIN EXPIRED"
-            self.api("setMyShortDescription", {"short_description": f"Phone OK {iso} · Substack {sub}"})
+            sub = "OK" if self.thirdparty_ok() else "LOGIN EXPIRED"
+            self.api("setMyShortDescription", {"short_description": f"Phone OK {iso} · Third party {sub}"})
             other = self.api("getMyDescription", {}) or {}
             text = other.get("description", "")
             name, fix = "GitHub price/news bot", ("price and news alerts may be down. Check the Actions tab of the "
@@ -429,12 +429,12 @@ class Heartbeat:
         text = w.get("other", "")
         ts = _parse_ts(text)
         if ts is None:
-            lines.append("❔ Phone / Substack forwarding: no status yet")
+            lines.append("❔ Phone / third-party forwarding: no status yet")
         elif time.time() - ts > STALE_AFTER:
-            lines.append(f"❌ Phone / Substack forwarding: offline (last seen {_ago(ts)})")
+            lines.append(f"❌ Phone / third-party forwarding: offline (last seen {_ago(ts)})")
         else:
-            sub = "login OK" if "Substack OK" in text else "⚠️ Substack LOGIN EXPIRED"
-            lines.append(f"✅ Phone / Substack forwarding: online ({_ago(ts)}) · {sub}")
+            sub = "login OK" if "Third party OK" in text else "⚠️ Third-party LOGIN EXPIRED"
+            lines.append(f"✅ Phone / third-party forwarding: online ({_ago(ts)}) · {sub}")
         st = state.get("_stats", {})
         y = (now.date() - timedelta(days=1)).isoformat()
         if y in st:
@@ -457,7 +457,7 @@ class Heartbeat:
         return True
 
 
-# ---------------------------------------------------------------- 8. prices for tickers in Substack posts
+# ---------------------------------------------------------------- 8. prices for tickers in third-party posts
 CASHTAG = re.compile(r"\$([A-Z]{1,5})\b")
 BARE = re.compile(r"(?<![\w$])([A-Z]{3,5})(?![\w])")
 STOP = set("""CEO CFO COO CTO CMO FDA SEC USA USD EUR GBP ETF IPO ATH ATL EPS OTC NYSE AMEX GDP CPI PPI FED FOMC
