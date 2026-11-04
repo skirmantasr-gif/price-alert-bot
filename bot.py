@@ -173,8 +173,32 @@ def substack_get(path):
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         if e.code in (401, 402, 403):
-            raise SubstackAuthError(f"HTTP {e.code}")
+            raise SubstackAuthError(f"HTTP {e.code}; {describe_error(e)}")
         raise
+
+
+def describe_error(e):
+    """Short, non-sensitive description of an error response, for the public log."""
+    try:
+        body = e.read(5000).decode(errors="replace")
+    except Exception:
+        body = ""
+    h = e.headers
+    parts = [f"server={h.get('server')}", f"type={(h.get('content-type') or '').split(';')[0]}"]
+    if h.get("cf-mitigated"):
+        parts.append(f"cf-mitigated={h.get('cf-mitigated')}")
+    low = body.lower()
+    if any(k in low for k in ("just a moment", "attention required", "cf-chl", "challenge-platform", "cloudflare ray id")):
+        parts.append("body=CLOUDFLARE block page")
+    else:
+        try:
+            j = json.loads(body)
+            msg = j.get("errors", [{}])[0].get("msg") if isinstance(j.get("errors"), list) else (j.get("error") or j.get("status"))
+            parts.append(f"body=SUBSTACK json: {str(msg)[:100]}")
+        except Exception:
+            t = re.search(r"<title>(.*?)</title>", body, re.S | re.I)
+            parts.append("body=" + (f"html title: {' '.join(t.group(1).split())[:80]}" if t else f"text: {' '.join(body.split())[:80]}"))
+    return ", ".join(parts)
 
 
 def substack_channels():
@@ -391,9 +415,8 @@ def main():
                 substack_fail_since = None
             except SubstackAuthError as e:
                 log.warning("Substack login rejected (%s); forwarding paused until next run", e)
-                send_telegram("⚠️ <b>Substack login expired</b> — chat messages are NOT being forwarded.\n"
-                              "Copy a fresh <code>substack.sid</code> cookie into the SUBSTACK_COOKIE "
-                              "secret on GitHub, then restart the workflow.")
+                send_telegram("⚠️ <b>Substack refused the request</b> — chat messages are NOT being forwarded.\n"
+                              f"{html.escape(str(e))}")
                 substack_on = False
             except Exception as e:
                 log.warning("Substack check failed: %s", type(e).__name__)
