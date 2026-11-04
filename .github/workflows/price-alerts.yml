@@ -50,6 +50,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # optional; keyword rules are used if unset
           AI_MODEL: claude-haiku-5-5                         # or claude-opus-5-5 (smarter, ~20x the cost)
           WATCHLIST: ${{ secrets.WATCHLIST }}                # stocks, per-stock % steps, news settings (JSON, see watchlist.py)
+          CONTRACTS: "true"                                  # contract wins by any small/mid cap, 15 markets (contracts.py)
+          CONTRACTS_CHAT_ID: ${{ secrets.CONTRACTS_CHAT_ID }}  # optional separate channel; same channel if unset
           HEARTBEAT_ROLE: github                             # watchdog: GitHub and the phone check on each other
           POLL_SECONDS: "60"
           MAX_RUNTIME_SECONDS: "20700"
