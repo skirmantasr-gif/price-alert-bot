@@ -217,10 +217,9 @@ def label(impact):
     if not impact:
         return ""
     d, conf, reason, by = impact
+    tag = " 🤖" if by == "ai" else ""
     if d == "neutral":
-        head = "➖ Neutral"
-    else:
-        word = {"high": "Expected to go", "medium": "Likely", "low": "Possibly"}[conf]
-        head = f"{'📈' if d == 'up' else '📉'} {word} {'UP' if d == 'up' else 'DOWN'}"
-    tag = "🤖" if by == "ai" else ""
-    return f"{head}{' — ' + reason if reason else ''} {tag}".rstrip()
+        return "⚪ Neutral" + tag  # no explanation needed for neutral
+    word = {"high": "Expected to go", "medium": "Likely", "low": "Possibly"}[conf]
+    head = f"🟢 {word} UP" if d == "up" else f"🔴 {word} DOWN"
+    return f"{head}{' — ' + reason if reason else ''}{tag}"
