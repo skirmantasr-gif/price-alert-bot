@@ -29,6 +29,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -347,6 +349,52 @@ def substack_check(state):
     return changed
 
 
+# ---------------------------------------------------------------- phone battery
+# Only active on Android/Termux with the Termux:API app installed; silently off elsewhere (e.g. GitHub).
+BATTERY_WARN = [int(x) for x in os.environ.get("BATTERY_WARN", "25,10").split(",") if x.strip()]
+BATTERY_SECONDS = 600
+
+
+def battery_status():
+    exe = shutil.which("termux-battery-status")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe], capture_output=True, text=True, timeout=30).stdout
+        d = json.loads(out)
+        return int(d["percentage"]), d.get("plugged", "UNPLUGGED") != "UNPLUGGED" or d.get("status") == "CHARGING"
+    except Exception:
+        return None
+
+
+class BatteryWatch:
+    def __init__(self):
+        self.on = bool(shutil.which("termux-battery-status"))
+        self.last = 0
+        self.warned = set()
+
+    def check(self):
+        if not self.on or time.time() - self.last < BATTERY_SECONDS:
+            return
+        self.last = time.time()
+        st = battery_status()
+        if st is None:
+            return
+        pct, charging = st
+        if charging:
+            if self.warned:
+                send_telegram(f"🔌 Phone is charging ({pct}%). Substack forwarding continues.")
+            self.warned.clear()
+            return
+        for lvl in sorted(BATTERY_WARN, reverse=True):
+            if pct <= lvl and lvl not in self.warned:
+                self.warned.update(l for l in BATTERY_WARN if l >= lvl)
+                send_telegram(f"🪫 <b>Phone battery {pct}%</b> — plug it in, or Substack chat "
+                              f"forwarding stops when it dies.")
+                log.info("Battery warning sent at %d%%", pct)
+                break
+
+
 # ---------------------------------------------------------------- main loop
 def fmt_price(p):
     return f"{p:.4f}" if p < 1 else f"{p:.2f}"
@@ -427,8 +475,10 @@ def main():
     news = NewsWatcher(NEWS_TICKERS, send_telegram) if NEWS_ON else None
     last_news = 0
 
+    battery = BatteryWatch()
     started = time.time()
     while True:
+        battery.check()
         changed = False
         for t in TICKERS:
             changed |= check(t, state, errors)
