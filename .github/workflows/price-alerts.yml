@@ -37,7 +37,8 @@ jobs:
           NEWS: "true"                                       # news headlines + filings to the same channel
           NEWS_SECONDS: "300"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # optional; keyword rules are used if unset
-          AI_MODEL: claude-opus-5-5                          # or claude-haiku-5-5 (much cheaper)
+          AI_MODEL: claude-haiku-5-5                         # or claude-opus-5-5 (smarter, ~20x the cost)
+          NEWS_EXCLUDE: ORCL                                 # price alerts only, no news/filings for these
           NEWS_IMPORTANT_ONLY: ""                            # e.g. "ORCL,KLAR" to get only 🚨 headlines for those
           TICKERS: GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA
           THRESHOLD_PCT: "2"
