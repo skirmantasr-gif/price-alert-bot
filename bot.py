@@ -16,6 +16,9 @@ Env vars:
   THRESHOLD_PCT        default 2
   POLL_SECONDS         default 60
   STATE_FILE           default ./state.json
+  NEWS                 "true" (default) = also send news headlines + SEC filings (see news.py)
+  NEWS_SECONDS         how often to check news, default 300
+  SEC_CONTACT          contact email the SEC requires for EDGAR access; filings are skipped if unset
   SUBSTACK_COOKIE      optional: value of your substack.sid cookie. When set, every new
                        message and reply in your Substack group chats is forwarded too.
 """
@@ -32,6 +35,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from news import NewsWatcher
+
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 TICKERS = [t.strip().upper() for t in os.environ.get("TICKERS", "GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA").split(",") if t.strip()]
@@ -47,6 +52,8 @@ SUBSTACK_COOKIE = os.environ.get("SUBSTACK_COOKIE", "").strip()
 if SUBSTACK_COOKIE.startswith("substack.sid="):
     SUBSTACK_COOKIE = SUBSTACK_COOKIE[len("substack.sid="):]
 SUBSTACK_API = "https://substack.com/api/v1"
+NEWS_ON = os.environ.get("NEWS", "true").lower() == "true"
+NEWS_SECONDS = int(os.environ.get("NEWS_SECONDS", "300"))
 TG_LIMIT = 3900  # Telegram max is 4096 chars; leave room for the header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
@@ -395,6 +402,8 @@ def main():
             except Exception as e:
                 lines.append(f"${t}: fetch error ({html.escape(str(e))})")
         extra = "\nSubstack chat forwarding: ON" if SUBSTACK_COOKIE else ""
+        if NEWS_ON:
+            extra += f"\nNews alerts: ON ({NewsWatcher(TICKERS, None).sources_label()})"
         send_telegram(f"✅ Price alert bot started. Alerts every ±{THRESHOLD * 100:g}%.{extra}\n" + "\n".join(lines))
 
     substack_on = bool(SUBSTACK_COOKIE)
@@ -402,11 +411,20 @@ def main():
     if substack_on:
         log.info("Substack chat forwarding enabled")
 
+    news = NewsWatcher(TICKERS, send_telegram) if NEWS_ON else None
+    last_news = 0
+
     started = time.time()
     while True:
         changed = False
         for t in TICKERS:
             changed |= check(t, state, errors)
+        if news and time.time() - last_news >= NEWS_SECONDS:
+            last_news = time.time()
+            try:
+                changed |= news.check(state)
+            except Exception as e:
+                log.warning("News check failed: %s", type(e).__name__)
         if substack_on:
             try:
                 changed |= substack_check(state)
