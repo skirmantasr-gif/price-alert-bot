@@ -404,6 +404,7 @@ def main():
         extra = "\nSubstack chat forwarding: ON" if SUBSTACK_COOKIE else ""
         if NEWS_ON:
             extra += f"\nNews alerts: ON ({NewsWatcher(TICKERS, None).sources_label()})"
+            extra += "\n<i>Up/down guesses are automated and can be wrong — not financial advice.</i>"
         send_telegram(f"✅ Price alert bot started. Alerts every ±{THRESHOLD * 100:g}%.{extra}\n" + "\n".join(lines))
 
     substack_on = bool(SUBSTACK_COOKIE)

@@ -23,6 +23,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
+import impact
+
 log = logging.getLogger("bot")
 
 UA = "Mozilla/5.0 (compatible; price-alert-bot/1.0)"
@@ -220,9 +222,163 @@ def sec_filings(ticker):
         doc = r.get("primaryDocument", [""] * 99)[i]
         link = (f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}" if doc else
                 f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=&dateb=&owner=include&count=40")
-        out.append({"acc": acc, "form": form, "items": items, "date": d, "link": link,
+        out.append({"acc": acc, "form": form, "items": items, "date": d, "link": link, "cik": cik, "doc": doc,
                     "desc": r.get("primaryDocDescription", [""] * 99)[i] or ""})
     return out
+
+
+# ---------------------------------------------------------------- insider filings (Form 3/4/5, 144)
+TX_CODES = {
+    "P": "Bought (open market)", "S": "Sold (open market)", "A": "Granted / awarded", "M": "Options exercised / RSUs vested",
+    "X": "Exercised options", "C": "Converted", "F": "Shares withheld for tax", "G": "Gift", "D": "Returned to company",
+    "J": "Other", "W": "Inherited", "I": "Discretionary trade", "K": "Equity swap", "V": "Voluntary report",
+    "E": "Short derivative expired", "H": "Long derivative expired", "O": "Exercised (out of the money)", "Z": "Trust deposit/withdrawal",
+    "L": "Small acquisition", "U": "Tendered in change of control",
+}
+ENTITY = re.compile(r"\b(inc|llc|l\.?p|ltd|fund|trust|capital|partners|holdings?|corp|corporation|management|group|"
+                    r"advisors?|investments?|ventures|plc|ag|sa|bv|gmbh|foundation|co)\b\.?", re.I)
+
+
+def _person(name):
+    """SEC lists people as 'Last First Middle' (surname first). Reordering breaks double surnames, so keep the
+    order and only fix ALL-CAPS."""
+    name = " ".join((name or "").split())
+    if name.isupper() and not ENTITY.search(name):
+        name = " ".join(p.capitalize() for p in name.split(" "))
+    return name
+
+
+def _num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _raw_doc(doc):
+    return re.sub(r"^xsl[^/]+/", "", doc or "")
+
+
+def parse_ownership(xml):
+    root = ET.fromstring(xml)
+    owners, roles = [], []
+    for ro in root.findall("reportingOwner"):
+        owners.append(_person(ro.findtext("reportingOwnerId/rptOwnerName")))
+        rel = ro.find("reportingOwnerRelationship")
+        if rel is not None:
+            yes = lambda tag: (rel.findtext(tag) or "").strip().lower() in ("1", "true")
+            if yes("isOfficer"):
+                roles.append((rel.findtext("officerTitle") or "Officer").strip())
+            if yes("isDirector"):
+                roles.append("Director")
+            if yes("isTenPercentOwner"):
+                roles.append("10% owner")
+            if yes("isOther"):
+                roles.append((rel.findtext("otherText") or "Other").strip())
+    notes = " ".join((f.text or "") for f in root.iter("footnote"))
+    plan = (root.findtext("aff10b5One") or "").strip().lower() in ("1", "true") or "10b5-1" in notes
+    tx = []
+    for path, deriv in (("nonDerivativeTable/nonDerivativeTransaction", False),
+                        ("derivativeTable/derivativeTransaction", True)):
+        for t in root.findall(path):
+            sh = _num(t.findtext("transactionAmounts/transactionShares/value"))
+            pr = _num(t.findtext("transactionAmounts/transactionPricePerShare/value"))
+            tx.append({"code": (t.findtext("transactionCoding/transactionCode") or "?").strip(), "deriv": deriv,
+                       "security": (t.findtext("securityTitle/value") or "").strip(),
+                       "shares": sh, "price": pr, "value": sh * pr,
+                       "after": t.findtext("postTransactionAmounts/sharesOwnedFollowingTransaction/value"),
+                       "date": (t.findtext("transactionDate/value") or "")[:10]})
+    holds = sum(_num(h.findtext("postTransactionAmounts/sharesOwnedFollowingTransaction/value"))
+                for h in root.findall("nonDerivativeTable/nonDerivativeHolding"))
+    return {"type": (root.findtext("documentType") or "4").strip().split("/")[0], "owners": owners,
+            "role": ", ".join(dict.fromkeys(" ".join(r.split()) for r in roles)) or "insider", "plan": plan, "tx": tx, "holds": holds}
+
+
+def parse_144(xml):
+    root = ET.fromstring(xml)
+    f = {}
+    rel = []
+    for el in root.iter():
+        tag = el.tag.split("}")[-1]
+        if tag == "relationshipToIssuer":
+            rel.append((el.text or "").strip())
+        elif el.text and el.text.strip() and tag not in f:
+            f[tag] = el.text.strip()
+    return {"type": "144", "owners": [_person(f.get("nameOfPersonForWhoseAccountTheSecuritiesAreToBeSold", ""))],
+            "role": ", ".join(r for r in rel if r) or "insider", "shares": _num(f.get("noOfUnitsSold")),
+            "value": _num(f.get("aggregateMarketValue")), "date": f.get("approxSaleDate", ""),
+            "source": f.get("natureOfAcquisitionTransaction", "")}
+
+
+def insider_details(it):
+    """Fetch and parse the XML of a Form 3/4/5/144. Returns a dict or None."""
+    form = it["form"].upper().split("/")[0]
+    if form not in ("3", "4", "5", "144") or not it.get("doc"):
+        return None
+    url = f"https://www.sec.gov/Archives/edgar/data/{it['cik']}/{it['acc'].replace('-', '')}/{_raw_doc(it['doc'])}"
+    xml = _get(url, {"User-Agent": f"price-alert-bot {SEC_CONTACT}"})
+    time.sleep(0.2)
+    return parse_144(xml) if form == "144" else parse_ownership(xml)
+
+
+def _sh(n):
+    return f"{n:,.0f}"
+
+
+def format_insider(it, ins):
+    t = it["ticker"]
+    who = html.escape(" & ".join(o for o in ins["owners"] if o) or "Insider")
+    role = html.escape(ins["role"])
+    amended = " (amended)" if "/A" in it["form"].upper() else ""
+    if ins["type"] == "144":
+        lines = [f"🟠👤 <b>${t}</b> PLANNED INSIDER SALE (Form 144){amended}",
+                 f"<b>{who}</b> ({role}) plans to sell <b>{_sh(ins['shares'])} sh</b> (~{impact.money(ins['value'])})"
+                 + (f" around {html.escape(ins['date'])}" if ins["date"] else "")]
+        if ins.get("source"):
+            lines.append(f"Shares came from: {html.escape(ins['source'])}")
+        return lines
+    if ins["type"] == "3":
+        lines = [f"👤 <b>${t}</b> NEW INSIDER (Form 3){amended}", f"<b>{who}</b> ({role})"]
+        if ins["holds"]:
+            lines.append(f"Holds {_sh(ins['holds'])} sh")
+        return lines
+    codes = {x["code"] for x in ins["tx"]}
+    if "P" in codes and "S" not in codes:
+        head = "🟢👤 INSIDER BUY"
+    elif "S" in codes and "P" not in codes:
+        head = "🔴👤 INSIDER SALE"
+    elif "P" in codes and "S" in codes:
+        head = "🟡👤 INSIDER BUY + SALE"
+    else:
+        head = "⚪👤 INSIDER FILING"
+    lines = [f"{head} <b>${t}</b> (Form {html.escape(it['form'])}){amended}", f"<b>{who}</b> ({role})"]
+    groups = {}
+    plain = {x["code"] for x in ins["tx"] if not x["deriv"]}
+    for x in ins["tx"]:
+        if x["deriv"] and x["code"] in ("M", "X", "C") and x["code"] in plain:
+            continue  # mirror of the share-side line
+
+        g = groups.setdefault((x["code"], x["deriv"], x["security"] if x["deriv"] else ""), {"sh": 0, "val": 0, "dates": set()})
+        g["sh"] += x["shares"]
+        g["val"] += x["value"]
+        if x["date"]:
+            g["dates"].add(x["date"])
+    for (code, deriv, sec), g in groups.items():
+        what = TX_CODES.get(code, f"Code {code}")
+        unit = html.escape(sec) if deriv and sec else "sh"
+        line = f"• {what}: <b>{_sh(g['sh'])} {unit}</b>"
+        if g["val"] and g["sh"]:
+            line += f" @ ${g['val'] / g['sh']:,.2f} avg = <b>{impact.money(g['val'])}</b>"
+        if g["dates"]:
+            ds = sorted(g["dates"])
+            line += f" ({ds[0]}{'…' + ds[-1] if len(ds) > 1 else ''})"
+        lines.append(line)
+    after = next((x["after"] for x in reversed(ins["tx"]) if not x["deriv"] and x["after"]), None)
+    if after:
+        lines.append(f"Now owns: {_sh(_num(after))} sh")
+    if ins["plan"]:
+        lines.append("📋 Pre-planned trade (Rule 10b5-1)")
+    return lines
 
 
 # ---------------------------------------------------------------- checker
@@ -236,8 +392,8 @@ class NewsWatcher:
 
     def sources_label(self):
         s = ["Google News", "Yahoo Finance", "FDA"]
-        s.append("SEC EDGAR" if SEC_CONTACT else "SEC EDGAR off (no SEC_CONTACT)")
-        return ", ".join(s)
+        s.append("SEC EDGAR + insider trades" if SEC_CONTACT else "SEC EDGAR off (no SEC_CONTACT)")
+        return ", ".join(s) + ". Impact guesses: " + (f"AI ({impact.AI_MODEL})" if impact.ai_enabled() else "keyword rules")
 
     def _fetch(self, name, fn, *args):
         try:
@@ -318,6 +474,15 @@ class NewsWatcher:
                 continue
             self.queue.append(it)
 
+        batch = self.queue[:MAX_SENDS_PER_POLL]
+        for it in batch:
+            if it["kind"] == "sec" and "insider" not in it:
+                it["insider"] = self._fetch("SEC EDGAR insider", insider_details, it)
+        try:
+            impact.assign(batch, {t: (COMPANIES.get(t, {}).get("match") or [t])[0] for t in self.tickers}, self.send)
+        except Exception as e:
+            log.warning("Impact step failed: %s", type(e).__name__)
+
         sent = 0
         while self.queue and sent < MAX_SENDS_PER_POLL:
             it = self.queue[0]
@@ -347,7 +512,19 @@ class NewsWatcher:
         return d.astimezone(timezone.utc).strftime(" · %b %d %H:%M UTC")
 
     def format(self, it):
+        msg = self._format(it)
+        lab = impact.label(it.get("impact"))
+        if lab:
+            head, _, tail = msg.rpartition("\n")  # impact goes above the link line
+            msg = f"{head}\n{html.escape(lab)}\n{tail}" if head else f"{msg}\n{html.escape(lab)}"
+        return msg
+
+    def _format(self, it):
         t = it["ticker"]
+        if it["kind"] == "sec" and it.get("insider"):
+            lines = format_insider(it, it["insider"])
+            lines.append(f'<a href="{html.escape(it["link"])}">Open filing</a>{self._when(it.get("date"))}')
+            return "\n".join(lines)
         if it["kind"] == "sec":
             form = it["form"]
             label = FORM_NAMES.get(form, FORM_NAMES.get(form.split("/")[0], form))
