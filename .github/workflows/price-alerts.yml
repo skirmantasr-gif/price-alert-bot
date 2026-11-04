@@ -25,10 +25,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Watch prices (~5h45m)
+      - name: Watch prices + Substack chat (~5h45m)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.PRICEHINIO_ALERT }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUBSTACK_COOKIE: ${{ secrets.SUBSTACK_COOKIE }}   # optional; forwarding is off if unset
           TICKERS: GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA
           THRESHOLD_PCT: "2"
           POLL_SECONDS: "60"
