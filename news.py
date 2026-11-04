@@ -68,6 +68,7 @@ GOV_NAMES = {
     "SLS": ["SELLAS Life Sciences"], "VNDA": ["Vanda Pharmaceuticals"],
 }
 CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))   # 🚨 + UP push at/above this
+GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "300"))  # Google blocks too-frequent automated searches
 CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
 USASPENDING_SECONDS = 3 * 3600    # federal award database (lags days behind press releases)
 
@@ -484,6 +485,7 @@ class NewsWatcher:
         self.recent_titles = []   # (ticker, words) of headlines sent/seen this run, for fuzzy dedup
         self.fail = {}            # source -> first failure time
         self.queue = []
+        self.last_google = 0.0
         self.last_contract_search = 0.0
         self.last_usaspending = 0.0
 
@@ -542,12 +544,15 @@ class NewsWatcher:
         mono = time.time()
         do_contracts = mono - self.last_contract_search >= CONTRACT_SEARCH_SECONDS
         do_usa = mono - self.last_usaspending >= USASPENDING_SECONDS
+        do_google = mono - self.last_google >= GOOGLE_SECONDS
+        if do_google:
+            self.last_google = mono
         if do_contracts:
             self.last_contract_search = mono
         if do_usa:
             self.last_usaspending = mono
         for t in self.tickers:
-            srcs = [("Google", google_news), ("Yahoo", yahoo_news)]
+            srcs = ([("Google", google_news)] if do_google else []) + [("Yahoo", yahoo_news)]
             if do_contracts:
                 srcs.append(("Google contracts", google_contracts))
             for name, fn in srcs:
