@@ -25,52 +25,29 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
+import extras
 import impact
+import watchlist
 
 log = logging.getLogger("bot")
 
 UA = "Mozilla/5.0 (compatible; price-alert-bot/1.0)"
 SEC_CONTACT = os.environ.get("SEC_CONTACT", "").strip()
-# Comma list of tickers that only get 🚨 headlines (e.g. "ORCL" if Oracle is too chatty). Empty = all headlines.
-IMPORTANT_ONLY = {t.strip().upper() for t in os.environ.get("NEWS_IMPORTANT_ONLY", "").split(",") if t.strip()}
+# Tickers that only get 🚨 headlines (too chatty otherwise). Empty = all headlines.
+IMPORTANT_ONLY = watchlist.IMPORTANT_ONLY
 MAX_AGE_HOURS = 48          # ignore items published longer ago than this
 SEEN_TTL_DAYS = 10          # forget seen-hashes after this
 MAX_SENDS_PER_POLL = 15     # rest waits for the next poll (keeps price checks responsive)
 
-# Search names + words that must appear in a headline for it to count as being about that company.
-# Tickers that are also ordinary words (ZIM, MIST, SLS...) only match together with a name.
-COMPANIES = {
-    "GLXY": {"q": ['"Galaxy Digital"', "GLXY"], "match": ["Galaxy Digital", "GLXY", "Novogratz"]},
-    "CHRS": {"q": ['"Coherus"', "CHRS"], "match": ["Coherus", "CHRS"]},
-    "CAPR": {"q": ['"Capricor"', "CAPR"], "match": ["Capricor", "CAPR", "deramiocel"]},
-    "CRTO": {"q": ['"Criteo"', "CRTO"], "match": ["Criteo", "CRTO"]},
-    "KLAR": {"q": ['"Klarna"'], "match": ["Klarna", "KLAR"]},
-    "ZIM":  {"q": ['"ZIM Integrated"', '"ZIM shipping"', '"ZIM stock"', '"NYSE:ZIM"'],
-             "match": ["ZIM Integrated", "ZIM Shipping", "ZIM stock", "ZIM shares", "NYSE: ZIM", "NYSE:ZIM", "(ZIM)", "ZIM's"]},
-    "ORCL": {"q": ['"Oracle"', "ORCL"], "match": ["Oracle", "ORCL", "Larry Ellison"]},
-    "BZUN": {"q": ['"Baozun"', "BZUN"], "match": ["Baozun", "BZUN"]},
-    "DXYZ": {"q": ['"Destiny Tech100"', "DXYZ"], "match": ["Destiny Tech100", "Destiny Tech 100", "DXYZ"]},
-    "MIST": {"q": ['"Milestone Pharmaceuticals"', "etripamil", "Cardamyst"],
-             "match": ["Milestone Pharma", "etripamil", "Cardamyst", "(MIST)", "NASDAQ: MIST", "NASDAQ:MIST"]},
-    "IMRX": {"q": ['"Immuneering"', "IMRX"], "match": ["Immuneering", "IMRX", "atebimetinib"]},
-    "VRRM": {"q": ['"Verra Mobility"', "VRRM"], "match": ["Verra Mobility", "VRRM"]},
-    "SLS":  {"q": ['"SELLAS"', "galinpepimut"], "match": ["SELLAS", "galinpepimut", "GPS vaccine", "(SLS)", "NASDAQ: SLS", "NASDAQ:SLS"]},
-    "VNDA": {"q": ['"Vanda Pharmaceuticals"', "VNDA"],
-             "match": ["Vanda", "VNDA", "Fanapt", "Hetlioz", "tradipitant", "Bysanti", "milsaperidone", "imsidolimab", "Nereus"]},
-}
-
-# Names the companies appear under in US federal contract data (USAspending.gov), incl. subsidiaries.
-GOV_NAMES = {
-    "GLXY": ["Galaxy Digital"], "CHRS": ["Coherus Biosciences"], "CAPR": ["Capricor"], "CRTO": ["Criteo"],
-    "KLAR": ["Klarna"], "ZIM": ["ZIM Integrated Shipping"], "ORCL": ["Oracle America", "Oracle Corporation"],
-    "BZUN": ["Baozun"], "DXYZ": ["Destiny Tech100"], "MIST": ["Milestone Pharmaceuticals"], "IMRX": ["Immuneering"],
-    "VRRM": ["Verra Mobility", "American Traffic Solutions", "Highway Toll Administration", "Redflex"],
-    "SLS": ["SELLAS Life Sciences"], "VNDA": ["Vanda Pharmaceuticals"],
-}
+# Per-company search terms / headline match words / federal-contract names come from the WATCHLIST secret
+# (see watchlist.py), so the list of stocks is not visible in the public repo.
+COMPANIES = watchlist.COMPANIES
+GOV_NAMES = watchlist.GOV_NAMES
 CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))   # 🚨 + UP push at/above this
 GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "300"))  # Google blocks too-frequent automated searches
 CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
 USASPENDING_SECONDS = 3 * 3600    # federal award database (lags days behind press releases)
+CALENDAR_SECONDS = 6 * 3600       # Google News search for announced earnings / FDA dates
 
 CONTRACT = re.compile(
     r"\b(contracts?|task orders?|delivery orders?|IDIQ|BPA|BARDA|Project BioShield|procurement|tender|"
@@ -219,6 +196,16 @@ def google_contracts(ticker):
             continue
         out.append({**it, "title": title, "source": src or "Google News"})
     return out
+
+
+def google_calendar(ticker):
+    """Headlines from the last month that announce an upcoming earnings date / FDA decision date."""
+    terms = [x for x in COMPANIES.get(ticker, {}).get("q", [ticker]) if x.startswith('"')] or [ticker]
+    q = ("(" + " OR ".join(terms) + ') (PDUFA OR "to report" OR "conference call" OR "advisory committee" '
+         'OR "target action date") when:30d')
+    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
+        {"q": q, "hl": "en-US", "gl": "US", "ceid": "US:en"})
+    return [it for it in _rss_items(_get(url)) if _matches(it["title"] + " " + it["desc"], ticker)]
 
 
 def usaspending(tickers):
@@ -488,6 +475,7 @@ class NewsWatcher:
         self.last_google = 0.0
         self.last_contract_search = 0.0
         self.last_usaspending = 0.0
+        self.last_calendar = 0.0
 
     def sources_label(self):
         s = ["Google News", "Yahoo Finance", "FDA"]
@@ -502,7 +490,8 @@ class NewsWatcher:
             return res
         except Exception as e:
             first = self.fail.setdefault(name, time.time())
-            log.warning("News source %s failed: %s", name, type(e).__name__ if not hasattr(e, "code") else f"HTTP {e.code}")
+            log.warning("News source %s failed: %s", name.split(":")[0],  # no ticker in the public log
+                        type(e).__name__ if not hasattr(e, "code") else f"HTTP {e.code}")
             if first != "notified" and time.time() - first > 3600:
                 self.send(f"⚠️ News source <b>{html.escape(name.split(':')[0])}</b> failing for 1h+; will keep trying.")
                 self.fail[name] = "notified"
@@ -551,6 +540,9 @@ class NewsWatcher:
             self.last_contract_search = mono
         if do_usa:
             self.last_usaspending = mono
+        do_calendar = mono - self.last_calendar >= CALENDAR_SECONDS
+        if do_calendar:
+            self.last_calendar = mono
         for t in self.tickers:
             srcs = ([("Google", google_news)] if do_google else []) + [("Yahoo", yahoo_news)]
             if do_contracts:
@@ -558,7 +550,15 @@ class NewsWatcher:
             for name, fn in srcs:
                 res, silent = run(f"{name}:{t}", fn, t)
                 for it in res:
-                    consider(_hash(t + "|" + _norm(it["title"])), {**it, "ticker": t, "kind": "news"}, silent)
+                    key = _hash(t + "|" + _norm(it["title"]))
+                    if key not in seen:
+                        changed |= extras.calendar_add(state, t, extras.extract_events(
+                            it["title"] + " " + (it.get("desc") or "")[:300]))
+                    consider(key, {**it, "ticker": t, "kind": "news"}, silent)
+            if do_calendar:
+                for it in self._fetch(f"Google calendar:{t}", google_calendar, t) or []:
+                    changed |= extras.calendar_add(state, t, extras.extract_events(
+                        it["title"] + " " + (it.get("desc") or "")[:300]))
             if SEC_CONTACT:
                 res, silent = run(f"SEC EDGAR:{t}", sec_filings, t)
                 for f in res:
@@ -611,13 +611,17 @@ class NewsWatcher:
             it = self.queue[0]
             if it["kind"] == "gov" and any(r[0] == it["ticker"] and r[1] and abs(r[1] * 1e6 - it["amount"]) <= 0.2 * it["amount"]
                                            for r in reported):
-                log.info("News: federal award for %s already reported; skipped", it["ticker"])
+                log.info("News: federal award already reported; skipped")
                 self.queue.pop(0)
                 continue
-            if not self.send(self.format(it)):
+            msg = self.format(it)
+            if not self.send(msg):
                 log.warning("News: Telegram send failed, will retry next poll")
                 break
             self.queue.pop(0)
+            extras.remember(it["ticker"], msg, it.get("link", ""))
+            extras.bump(state, "sec" if it["kind"] == "sec" else "news")
+            changed = True
             if it.get("contract") or it["kind"] == "gov":
                 reported.append([it["ticker"], round((it.get("contract") or it.get("amount") or 0) / 1e6, 2), today])
                 changed = True

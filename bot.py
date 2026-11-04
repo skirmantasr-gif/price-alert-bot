@@ -2,18 +2,21 @@
 """
 Stock price alert bot -> Telegram.
 
-Watches tickers (default: 14 tickers, see TICKERS) and sends a Telegram message every
-time the price moves THRESHOLD_PCT (default 2%) up or down from the price of the
+Watches the stocks in the WATCHLIST secret (see watchlist.py) and sends a Telegram message every
+time the price moves the stock's threshold (default 2%) up or down from the price of the
 last alert. After each alert the reference price resets to the current price,
-so you get one message per 2% step in either direction.
+so you get one message per step in either direction. Also: trading halts, unusual volume,
+watchdog + daily status, catalyst calendar (see extras.py) and news (see news.py).
 
 Standard library only - no pip install needed.
 
 Env vars:
   TELEGRAM_BOT_TOKEN   (required) token from @BotFather
   TELEGRAM_CHAT_ID     (required) your chat id (see README)
-  TICKERS              comma list, default "GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA"
-  THRESHOLD_PCT        default 2
+  WATCHLIST            JSON with stocks, per-stock thresholds and news settings (see watchlist.py)
+  TICKERS              comma list, only used when WATCHLIST is not set
+  THRESHOLD_PCT        default 2 (per-stock values in WATCHLIST override it)
+  HEARTBEAT_ROLE       "github" or "phone": enables the watchdog (each side checks the other)
   POLL_SECONDS         default 60
   STATE_FILE           default ./state.json
   NEWS                 "true" (default) = also send news headlines + SEC filings (see news.py)
@@ -38,12 +41,15 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import extras
+import watchlist
 from news import NewsWatcher
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-TICKERS = [t.strip().upper() for t in os.environ.get("TICKERS", "GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA").split(",") if t.strip()]
-THRESHOLD = float(os.environ.get("THRESHOLD_PCT", "2")) / 100.0
+TICKERS = watchlist.TICKERS
+THRESHOLDS = watchlist.THRESHOLDS  # ticker -> fraction, e.g. 0.02
+HEARTBEAT_ROLE = os.environ.get("HEARTBEAT_ROLE", "").strip().lower()
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 STATE_FILE = os.environ.get("STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"))
 MAX_RUNTIME = int(os.environ.get("MAX_RUNTIME_SECONDS", "0"))  # 0 = run forever; set on GitHub Actions
@@ -61,7 +67,7 @@ SUBSTACK_API = "https://substack.com/api/v1"
 NEWS_ON = os.environ.get("NEWS", "true").lower() == "true"
 NEWS_SECONDS = int(os.environ.get("NEWS_SECONDS", "300"))
 # Tickers that keep price alerts but get no news / SEC / insider messages
-NEWS_EXCLUDE = {t.strip().upper() for t in os.environ.get("NEWS_EXCLUDE", "").split(",") if t.strip()}
+NEWS_EXCLUDE = watchlist.NEWS_EXCLUDE
 NEWS_TICKERS = [t for t in TICKERS if t not in NEWS_EXCLUDE]
 TG_LIMIT = 3900  # Telegram max is 4096 chars; leave room for the header
 
@@ -74,6 +80,19 @@ def http_get_json(url, timeout=15):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def telegram_api(method, params):
+    """Bot-level call (no chat). Returns the result or None; never logs details."""
+    url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+    try:
+        req = urllib.request.Request(url, data=urllib.parse.urlencode(params).encode(), headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = json.loads(r.read().decode())
+            return body.get("result") if body.get("ok") else None
+    except Exception as e:
+        log.warning("Telegram %s failed: %s", method, type(e).__name__)
+        return None
 
 
 def telegram_call(method, params):
@@ -108,16 +127,24 @@ def telegram_call(method, params):
     return False
 
 
-def send_telegram(text):
-    return telegram_call("sendMessage", {"text": text, "parse_mode": "HTML",
-                                         "disable_web_page_preview": "true"})
+def send_telegram(text, silent=None):
+    """silent=None: decide from the message type (routine news / filings arrive without sound)."""
+    if silent is None:
+        silent = extras.is_quiet(text)
+    params = {"text": text, "parse_mode": "HTML", "disable_web_page_preview": "true"}
+    if silent:
+        params["disable_notification"] = "true"
+    return telegram_call("sendMessage", params)
 
 
 def send_photo(url):
-    return telegram_call("sendPhoto", {"photo": url})
+    return telegram_call("sendPhoto", {"photo": url, "disable_notification": "true"})
 
 
 # ---------------------------------------------------------------- price source
+LAST_CHART = {}  # ticker -> last 1-minute chart (used for the volume check)
+
+
 def fetch_price(ticker):
     """
     Latest price incl. pre-market / after-hours, from Yahoo Finance chart API.
@@ -128,6 +155,7 @@ def fetch_price(ticker):
            f"?interval=1m&range=1d&includePrePost=true")
     data = http_get_json(url)
     result = data["chart"]["result"][0]
+    LAST_CHART[ticker] = result
     meta = result["meta"]
     prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
 
@@ -261,15 +289,24 @@ def images(item):
             if m.get("type") == "image" and m.get("url")]
 
 
-def send_chat_message(header, body, link, pics):
+_ticker_cache = {}
+
+
+def send_chat_message(header, body, link, pics, loud=True):
+    """loud: posts by the chat's author ring; other members' posts arrive silently."""
     body = (body or "").strip()
-    footer = f'\n\n<a href="{html.escape(link)}">Open in Substack</a>'
+    prices = ""
+    try:
+        prices = extras.price_context(body, fetch_price, _ticker_cache)
+    except Exception as e:
+        log.warning("Price context failed: %s", type(e).__name__)
+    footer = (f"\n\n{prices}" if prices else "") + f'\n\n<a href="{html.escape(link)}">Open in Substack</a>'
     chunks = [html.escape(body[i:i + TG_LIMIT // 2]) for i in range(0, len(body), TG_LIMIT // 2)] or [""]
     for i, chunk in enumerate(chunks):
         text = (header + ("\n\n" + chunk if chunk else "")) if i == 0 else chunk
         if i == len(chunks) - 1:
             text += footer
-        if not send_telegram(text):
+        if not send_telegram(text, silent=not (loud and i == 0)):
             return False
     for p in pics:
         send_photo(p)  # best effort; a failed image shouldn't block the queue
@@ -330,12 +367,12 @@ def substack_check(state):
         if kind == "thread":
             icon = "📢" if p.get("user_pub_role") == "admin" else "💬"
             header = f"{icon} <b>{cname}</b> · {who(t.get('user'), p.get('user_pub_role'))}"
-            ok = send_chat_message(header, p.get("body"), link, images(p))
+            ok = send_chat_message(header, p.get("body"), link, images(p), loud=p.get("user_pub_role") == "admin")
         else:
             c = r["comment"]
             header = (f"↳ <b>{cname}</b> · {who(r.get('user'), c.get('user_pub_role'))}\n"
                       f"<i>reply to: “{html.escape(snippet(p.get('body')))}”</i>")
-            ok = send_chat_message(header, c.get("body"), link, images(c))
+            ok = send_chat_message(header, c.get("body"), link, images(c), loud=c.get("user_pub_role") == "admin")
         if not ok:
             log.warning("Substack: Telegram send failed, will retry next poll")
             break
@@ -407,12 +444,12 @@ def fmt_pct(x):
     return f"{x * 100:+.2f}%"
 
 
-def check(ticker, state, errors):
+def check(ticker, state, errors, volume=None):
     try:
         price, prev_close, session = fetch_price(ticker)
     except Exception as e:
         first = errors.setdefault(ticker, {"since": time.time(), "notified": False})
-        log.warning("%s fetch failed: %s", ticker, e)
+        log.warning("Price fetch failed for a ticker: %s", type(e).__name__)  # no ticker in the public log
         if not first["notified"] and time.time() - first["since"] > ERROR_ALERT_AFTER:
             send_telegram(f"⚠️ Can't fetch <b>${ticker}</b> price for 15+ min: {html.escape(str(e))}")
             first["notified"] = True
@@ -421,29 +458,35 @@ def check(ticker, state, errors):
     err = errors.pop(ticker, None)
     if err and err["notified"]:
         send_telegram(f"✅ <b>${ticker}</b> price feed recovered: ${fmt_price(price)}")
+    changed = False
+    if volume and session != "stale" and ticker in LAST_CHART:
+        try:
+            changed |= volume.check(ticker, LAST_CHART[ticker], price, prev_close, state)
+        except Exception as e:
+            log.warning("Volume check failed: %s", type(e).__name__)
     s = state.get(ticker)
     if session == "stale" and s is not None:
-        return False  # no fresh trade yet; wait for a real one
+        return changed  # no fresh trade yet; wait for a real one
     if s is None:
         state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
-        log.info("%s baseline set at %.4f", ticker, price)
+        log.info("Baseline set for a ticker")
         return True
 
     ref = s["ref"]
     change = price / ref - 1
-    if abs(change) >= THRESHOLD:
+    if abs(change) >= THRESHOLDS.get(ticker, 0.02):
         up = change > 0
         day = f"\nDay: {fmt_pct(price / prev_close - 1)} vs prev close ${fmt_price(prev_close)}" if prev_close else ""
         msg = (f"{'🟢📈' if up else '🔴📉'} <b>${ticker}</b> {'UP' if up else 'DOWN'} {fmt_pct(change)}\n"
                f"Price: <b>${fmt_price(price)}</b> (was ${fmt_price(ref)} at last alert)"
                f"{day}\nSession: {session}")
+        msg = "\n".join([msg] + extras.related(ticker))
         if send_telegram(msg):
             state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
-            log.info("ALERT %s %s -> %.4f", ticker, fmt_pct(change), price)
+            extras.bump(state, "price")
+            log.info("Price alert sent")
             return True
-    else:
-        log.debug("%s %.4f (%s from ref)", ticker, price, fmt_pct(change))
-    return False
+    return changed
 
 
 def main():
@@ -454,14 +497,18 @@ def main():
     if not SUBSTACK_COOKIE:
         state.pop("_substack", None)  # Substack runs elsewhere; keep chat ids out of the public state file
     errors = {}
-    log.info("Watching %s, threshold %.1f%%, every %ds", TICKERS, THRESHOLD * 100, POLL_SECONDS)
+    log.info("Watching %d tickers, every %ds", len(TICKERS), POLL_SECONDS)  # tickers stay out of the public log
+    if watchlist.ERROR or (HEARTBEAT_ROLE == "github" and not TICKERS):
+        send_telegram("⚠️ <b>No stocks to watch</b> — " + html.escape(
+            watchlist.ERROR or "the WATCHLIST secret is missing or empty") + ". Price and news alerts are off.")
 
     if STARTUP_MESSAGE:
         lines = []
         for t in TICKERS:
+            step = f" · alerts every ±{THRESHOLDS[t] * 100:g}%"
             try:
                 p, _, sess = fetch_price(t)
-                lines.append(f"${t}: ${fmt_price(p)} ({sess})")
+                lines.append(f"${t}: ${fmt_price(p)} ({sess}){step}")
             except Exception as e:
                 lines.append(f"${t}: fetch error ({html.escape(str(e))})")
         extra = "\nSubstack chat forwarding: ON" if SUBSTACK_COOKIE else ""
@@ -470,7 +517,9 @@ def main():
             if NEWS_EXCLUDE:
                 extra += f"\nNo news for: {', '.join(sorted(NEWS_EXCLUDE))}"
             extra += "\n<i>Up/down guesses are automated and can be wrong — not financial advice.</i>"
-        send_telegram(f"✅ Price alert bot started. Alerts every ±{THRESHOLD * 100:g}%.{extra}\n" + "\n".join(lines))
+        if TICKERS:
+            extra += "\nAlso: trading halts ⏸️, unusual volume 📊, catalyst calendar 📅, daily check ☀️"
+        send_telegram(f"✅ Price alert bot started.{extra}\n" + "\n".join(lines))
 
     substack_on = bool(SUBSTACK_COOKIE)
     substack_fail_since = None
@@ -481,12 +530,20 @@ def main():
     last_news = 0
 
     battery = BatteryWatch()
+    halts = extras.HaltWatcher(TICKERS, send_telegram)
+    volume = extras.VolumeWatcher(http_get_json, send_telegram)
+    heartbeat = extras.Heartbeat(HEARTBEAT_ROLE, telegram_api, send_telegram, substack_ok=lambda: substack_on)
     started = time.time()
     while True:
         battery.check()
         changed = False
         for t in TICKERS:
-            changed |= check(t, state, errors)
+            changed |= check(t, state, errors, volume)
+        for name, fn in (("Halt check", halts.check), ("Watchdog", heartbeat.check)):
+            try:
+                changed |= fn(state)
+            except Exception as e:
+                log.warning("%s failed: %s", name, type(e).__name__)
         if news and time.time() - last_news >= NEWS_SECONDS:
             last_news = time.time()
             try:
