@@ -27,6 +27,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Claude SDK (for AI impact predictions)
+        continue-on-error: true   # optional; the bot falls back to keyword rules if this fails
         run: pip install --quiet --require-hashes --only-binary :all: -r requirements-ai.txt   # exact, hash-checked versions
 
       - name: Watch prices + news (~5h45m)
