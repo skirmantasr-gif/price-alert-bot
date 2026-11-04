@@ -31,6 +31,15 @@ jobs:
         run: |   # exact, hash-checked versions only
           pip install --quiet --require-hashes --only-binary ":all:" -r requirements-ai.txt
 
+      - name: Load saved state (encrypted, so the public repo doesn't show what's watched)
+        env:
+          STATE_PASS: ${{ secrets.PRICEHINIO_ALERT }}
+        run: |
+          if [ -f state.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a -pass env:STATE_PASS -in state.enc -out state.json \
+              || { echo "Saved state could not be decrypted (bot token changed?); starting fresh"; rm -f state.json; }
+          fi
+
       - name: Watch prices + news (~5h45m)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.PRICEHINIO_ALERT }}
@@ -40,10 +49,8 @@ jobs:
           NEWS_SECONDS: "60"                                 # SEC, Yahoo, FDA every minute; Google News every 5 min
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # optional; keyword rules are used if unset
           AI_MODEL: claude-haiku-5-5                         # or claude-opus-5-5 (smarter, ~20x the cost)
-          NEWS_EXCLUDE: ORCL                                 # price alerts only, no news/filings for these
-          NEWS_IMPORTANT_ONLY: ""                            # e.g. "ORCL,KLAR" to get only 🚨 headlines for those
-          TICKERS: GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA
-          THRESHOLD_PCT: "2"
+          WATCHLIST: ${{ secrets.WATCHLIST }}                # stocks, per-stock % steps, news settings (JSON, see watchlist.py)
+          HEARTBEAT_ROLE: github                             # watchdog: GitHub and the phone check on each other
           POLL_SECONDS: "60"
           MAX_RUNTIME_SECONDS: "20700"
           STARTUP_MESSAGE: ${{ github.event_name == 'workflow_dispatch' }}
@@ -54,11 +61,14 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}   # only this step gets repo-write access
+          STATE_PASS: ${{ secrets.PRICEHINIO_ALERT }}
         run: |
           [ -f state.json ] || exit 0
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -a -pass env:STATE_PASS -in state.json -out state.enc
           git config user.name "price-alert-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state.json
+          git add state.enc
+          git rm --cached --quiet --ignore-unmatch state.json   # the old unencrypted file
           git diff --cached --quiet && exit 0
           git commit -m "Update state [skip ci]"
           AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
