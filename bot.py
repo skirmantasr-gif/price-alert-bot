@@ -21,6 +21,7 @@ Env vars:
   SEC_CONTACT          contact email the SEC requires for EDGAR access; filings are skipped if unset
   SUBSTACK_COOKIE      optional: value of your substack.sid cookie. When set, every new
                        message and reply in your Substack group chats is forwarded too.
+  SUBSTACK_CONNECT_SID optional: value of the connect.sid cookie, if your account has one.
 """
 
 import html
@@ -51,6 +52,9 @@ UA = "Mozilla/5.0 (compatible; price-alert-bot/1.0)"
 SUBSTACK_COOKIE = os.environ.get("SUBSTACK_COOKIE", "").strip()
 if SUBSTACK_COOKIE.startswith("substack.sid="):
     SUBSTACK_COOKIE = SUBSTACK_COOKIE[len("substack.sid="):]
+SUBSTACK_CONNECT_SID = os.environ.get("SUBSTACK_CONNECT_SID", "").strip()
+if SUBSTACK_CONNECT_SID.startswith("connect.sid="):
+    SUBSTACK_CONNECT_SID = SUBSTACK_CONNECT_SID[len("connect.sid="):]
 SUBSTACK_API = "https://substack.com/api/v1"
 NEWS_ON = os.environ.get("NEWS", "true").lower() == "true"
 NEWS_SECONDS = int(os.environ.get("NEWS_SECONDS", "300"))
@@ -176,7 +180,8 @@ def substack_get(path):
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
         "Accept": "application/json",
-        "Cookie": f"substack.sid={SUBSTACK_COOKIE}",
+        "Cookie": f"substack.sid={SUBSTACK_COOKIE}"
+                  + (f"; connect.sid={SUBSTACK_CONNECT_SID}" if SUBSTACK_CONNECT_SID else ""),
     })
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -393,6 +398,8 @@ def main():
         sys.exit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.")
 
     state = load_state()
+    if not SUBSTACK_COOKIE:
+        state.pop("_substack", None)  # Substack runs elsewhere; keep chat ids out of the public state file
     errors = {}
     log.info("Watching %s, threshold %.1f%%, every %ds", TICKERS, THRESHOLD * 100, POLL_SECONDS)
 
