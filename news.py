@@ -7,6 +7,8 @@ Sources (all free, no keys):
   - SEC EDGAR filings        (8-K, 6-K, offerings, insider trades, 13D/G...). Needs SEC_CONTACT env var:
                               the SEC requires a contact email in the User-Agent. Off if unset.
   - FDA press releases RSS   (matched against company names)
+  - Contract wins            (extra Google News search every 15 min; 🏛️ tag, 🚨 at >= CONTRACT_MIN_USD, default $20M)
+  - USAspending.gov          (official US federal contract awards >= CONTRACT_MIN_USD, every 3 h; lags days)
 
 state.json is public, so only short hashes of seen items are stored there (no titles).
 """
@@ -56,6 +58,40 @@ COMPANIES = {
     "VNDA": {"q": ['"Vanda Pharmaceuticals"', "VNDA"],
              "match": ["Vanda", "VNDA", "Fanapt", "Hetlioz", "tradipitant", "Bysanti", "milsaperidone", "imsidolimab", "Nereus"]},
 }
+
+# Names the companies appear under in US federal contract data (USAspending.gov), incl. subsidiaries.
+GOV_NAMES = {
+    "GLXY": ["Galaxy Digital"], "CHRS": ["Coherus Biosciences"], "CAPR": ["Capricor"], "CRTO": ["Criteo"],
+    "KLAR": ["Klarna"], "ZIM": ["ZIM Integrated Shipping"], "ORCL": ["Oracle America", "Oracle Corporation"],
+    "BZUN": ["Baozun"], "DXYZ": ["Destiny Tech100"], "MIST": ["Milestone Pharmaceuticals"], "IMRX": ["Immuneering"],
+    "VRRM": ["Verra Mobility", "American Traffic Solutions", "Highway Toll Administration", "Redflex"],
+    "SLS": ["SELLAS Life Sciences"], "VNDA": ["Vanda Pharmaceuticals"],
+}
+CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))   # 🚨 + UP push at/above this
+CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
+USASPENDING_SECONDS = 3 * 3600    # federal award database (lags days behind press releases)
+
+CONTRACT = re.compile(
+    r"\b(contracts?|task orders?|delivery orders?|IDIQ|BPA|BARDA|Project BioShield|procurement|tender|"
+    r"(wins?|won|awarded|secures?|selected for|lands?|receives?) .{0,60}\b(award|deal|order|agreement|funding))\b", re.I)
+GOV = re.compile(r"\b(U\.S\.|US|federal|government|Army|Navy|Air Force|Space Force|Marine Corps|Pentagon|DoD|"
+                 r"Department of|DARPA|BARDA|HHS|NIH|CDC|DHS|NASA|GSA|state of|city of|county|municipal|"
+                 r"transit|authority|DOT|agency|ministry)\b")
+AMOUNT = re.compile(r"(?:US)?\$\s?(\d[\d,]*(?:\.\d+)?)\s?(billion|bn|b|million|mln|mn|m)?\b", re.I)
+
+
+def contract_info(text):
+    """(is_contract, is_government, largest $ amount or 0) from a headline/snippet."""
+    if not CONTRACT.search(text) or re.search(r"\b(futures?|options?) contracts?\b", text, re.I):
+        return False, False, 0
+    best = 0
+    for num, unit in AMOUNT.findall(text):
+        v = float(num.replace(",", ""))
+        u = (unit or "").lower()
+        v *= 1e9 if u in ("billion", "bn", "b") else 1e6 if u in ("million", "mln", "mn", "m") else 1
+        best = max(best, v)
+    return True, bool(GOV.search(text)), best
+
 
 # Quote/chart pages and other non-news that Google News indexes
 JUNK = re.compile(r"stock price|stock chart|\b[A-Z]{1,5}\d{6}[CP]\d{8}\b|price,? chart|stock quote|\bquote\b|options chain|seasonal returns|historical (prices|data)|"
@@ -164,6 +200,65 @@ def google_news(ticker):
         if not _matches(title, ticker):
             continue
         out.append({**it, "title": title, "source": src or "Google News"})
+    return out
+
+
+def google_contracts(ticker):
+    """Second Google News search aimed at contract wins / government awards (only contract headlines kept)."""
+    terms = [x for x in COMPANIES.get(ticker, {}).get("q", [ticker]) if x.startswith('"')] or [ticker]
+    q = ("(" + " OR ".join(terms) + ') (contract OR awarded OR "task order" OR BARDA OR procurement OR tender) when:2d')
+    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
+        {"q": q, "hl": "en-US", "gl": "US", "ceid": "US:en"})
+    out = []
+    for it in _rss_items(_get(url)):
+        title, src = it["title"], it["source"]
+        if src and title.endswith(" - " + src):
+            title = title[: -len(src) - 3]
+        if JUNK.search(title) or not _matches(title, ticker) or not contract_info(title + " " + it["desc"])[0]:
+            continue
+        out.append({**it, "title": title, "source": src or "Google News"})
+    return out
+
+
+def usaspending(tickers):
+    """Federal contract awards >= CONTRACT_MIN first signed in the last 45 days, for all watched companies in one
+    query (USAspending.gov, free, no key; it is slow, ~1 min)."""
+    import json
+    names = {n: t for t in tickers for n in GOV_NAMES.get(t, [])}
+    if not names:
+        return []
+    today = datetime.now(timezone.utc).date()
+    since = today.fromordinal(today.toordinal() - 45).isoformat()
+    body = {"filters": {"recipient_search_text": list(names), "award_type_codes": ["A", "B", "C", "D"],
+                        "award_amounts": [{"lower_bound": CONTRACT_MIN}],
+                        "time_period": [{"start_date": since, "end_date": today.isoformat(),
+                                         "date_type": "last_modified_date"}]},
+            "fields": ["Award ID", "Recipient Name", "Award Amount", "Start Date", "End Date", "Awarding Agency",
+                       "Awarding Sub Agency", "Description", "Last Modified Date", "Base Obligation Date",
+                       "generated_internal_id"],
+            "limit": 100, "sort": "Last Modified Date", "order": "desc"}
+    req = urllib.request.Request("https://api.usaspending.gov/api/v2/search/spending_by_award/",
+                                 data=json.dumps(body).encode(), method="POST",
+                                 headers={"User-Agent": UA, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        data = json.loads(r.read())
+    out = []
+    for a in data.get("results", []):
+        rname = a.get("Recipient Name") or ""
+        t = next((tk for n, tk in names.items() if re.search(r"\b" + re.escape(n) + r"\b", rname, re.I)), None)
+        if not t:
+            continue  # fuzzy search can return other companies
+        amt = _num(a.get("Award Amount"))
+        signed = (a.get("Base Obligation Date") or a.get("Start Date") or "")[:10]
+        if amt < CONTRACT_MIN or not signed or signed < since:
+            continue  # old award that was only modified
+        gid = a.get("generated_internal_id") or a.get("Award ID") or ""
+        out.append({"kind": "gov", "ticker": t, "award_id": a.get("Award ID") or gid, "gid": gid, "amount": amt,
+                    "recipient": rname, "agency": a.get("Awarding Agency") or "",
+                    "sub_agency": a.get("Awarding Sub Agency") or "", "desc": a.get("Description") or "",
+                    "signed": signed, "start": a.get("Start Date") or "", "end": a.get("End Date") or "", "date": None,
+                    "link": f"https://www.usaspending.gov/award/{urllib.parse.quote(gid)}" if gid else
+                            "https://www.usaspending.gov/search"})
     return out
 
 
@@ -389,10 +484,13 @@ class NewsWatcher:
         self.recent_titles = []   # (ticker, words) of headlines sent/seen this run, for fuzzy dedup
         self.fail = {}            # source -> first failure time
         self.queue = []
+        self.last_contract_search = 0.0
+        self.last_usaspending = 0.0
 
     def sources_label(self):
         s = ["Google News", "Yahoo Finance", "FDA"]
         s.append("SEC EDGAR + insider trades" if SEC_CONTACT else "SEC EDGAR off (no SEC_CONTACT)")
+        s.append(f"contract wins (🏛️, 🚨 from {impact.money(CONTRACT_MIN)}) + USAspending.gov federal awards")
         return ", ".join(s) + ". Impact guesses: " + (f"AI ({impact.AI_MODEL})" if impact.ai_enabled() else "keyword rules")
 
     def _fetch(self, name, fn, *args):
@@ -441,8 +539,18 @@ class NewsWatcher:
                 return
             new.append(item)
 
+        mono = time.time()
+        do_contracts = mono - self.last_contract_search >= CONTRACT_SEARCH_SECONDS
+        do_usa = mono - self.last_usaspending >= USASPENDING_SECONDS
+        if do_contracts:
+            self.last_contract_search = mono
+        if do_usa:
+            self.last_usaspending = mono
         for t in self.tickers:
-            for name, fn in (("Google", google_news), ("Yahoo", yahoo_news)):
+            srcs = [("Google", google_news), ("Yahoo", yahoo_news)]
+            if do_contracts:
+                srcs.append(("Google contracts", google_contracts))
+            for name, fn in srcs:
                 res, silent = run(f"{name}:{t}", fn, t)
                 for it in res:
                     consider(_hash(t + "|" + _norm(it["title"])), {**it, "ticker": t, "kind": "news"}, silent)
@@ -451,13 +559,23 @@ class NewsWatcher:
                 for f in res:
                     consider(_hash("sec|" + f["acc"]), {**f, "ticker": t, "kind": "sec"}, silent)
                 time.sleep(0.2)  # SEC asks for <10 requests/second
+        if do_usa:
+            res, silent = run("USAspending", usaspending, self.tickers)
+            for a in res:
+                consider(_hash("usa|" + a["gid"]), a, silent)
         res, silent = run("FDA", fda_news, self.tickers)
         for it in res:
             consider(_hash(it["ticker"] + "|fda|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
 
         # merge same story from several sources (within this batch and vs. recently sent)
-        new.sort(key=lambda x: x.get("date") or now)
+        reported = ns.setdefault("contracts", [])  # [ticker, $M, date] of contract wins already sent (public data)
+        new.sort(key=lambda x: (x["kind"] == "gov", x.get("date") or now))  # official awards after the news
         for it in new:
+            if it["kind"] == "news":
+                is_c, is_gov, amt = contract_info(it["title"] + " " + (it.get("desc") or "")[:300])
+                if is_c and (is_gov or amt):
+                    it["contract"] = amt
+
             if it["kind"] == "news":
                 w = _words(it["title"])
                 dup = next((q for q in self.queue if q["kind"] == "news" and q["ticker"] == it["ticker"]
@@ -486,10 +604,18 @@ class NewsWatcher:
         sent = 0
         while self.queue and sent < MAX_SENDS_PER_POLL:
             it = self.queue[0]
+            if it["kind"] == "gov" and any(r[0] == it["ticker"] and r[1] and abs(r[1] * 1e6 - it["amount"]) <= 0.2 * it["amount"]
+                                           for r in reported):
+                log.info("News: federal award for %s already reported; skipped", it["ticker"])
+                self.queue.pop(0)
+                continue
             if not self.send(self.format(it)):
                 log.warning("News: Telegram send failed, will retry next poll")
                 break
             self.queue.pop(0)
+            if it.get("contract") or it["kind"] == "gov":
+                reported.append([it["ticker"], round((it.get("contract") or it.get("amount") or 0) / 1e6, 2), today])
+                changed = True
             if it["kind"] == "news":
                 self.recent_titles.append((it["ticker"], it["words"]))
                 self.recent_titles = self.recent_titles[-500:]
@@ -500,6 +626,7 @@ class NewsWatcher:
 
         # prune old hashes
         old = datetime.fromtimestamp(now.timestamp() - SEEN_TTL_DAYS * 86400, timezone.utc).strftime("%Y-%m-%d")
+        ns["contracts"] = [r for r in reported if r[2] >= old]
         for k in [k for k, v in seen.items() if v < old]:
             del seen[k]
             changed = True
@@ -521,6 +648,21 @@ class NewsWatcher:
 
     def _format(self, it):
         t = it["ticker"]
+        if it["kind"] == "gov":
+            amt = it["amount"]
+            lines = [f"{'🚨' if amt >= CONTRACT_MIN else ''}🏛️ <b>${t}</b> US FEDERAL CONTRACT: <b>{impact.money(amt)}</b>",
+                     "From: " + html.escape(it["agency"] + (f" ({it['sub_agency']})" if it["sub_agency"] and it["sub_agency"] != it["agency"] else ""))]
+            if it["recipient"]:
+                lines.append(f"To: {html.escape(it['recipient'])}")
+            if it["desc"]:
+                lines.append(f"What: {html.escape(' '.join(it['desc'].split())[:250])}")
+            if it["start"] or it["end"]:
+                lines.append(f"Period: {html.escape(it['start'] or '?')} → {html.escape(it['end'] or '?')}")
+            if it.get("signed"):
+                lines.append(f"Signed: {html.escape(it['signed'])}")
+            lines.append("<i>USAspending.gov (official record, usually days after the announcement)</i>")
+            lines.append(f'<a href="{html.escape(it["link"])}">Open award</a>')
+            return "\n".join(lines)
         if it["kind"] == "sec" and it.get("insider"):
             lines = format_insider(it, it["insider"])
             lines.append(f'<a href="{html.escape(it["link"])}">Open filing</a>{self._when(it.get("date"))}')
@@ -540,8 +682,13 @@ class NewsWatcher:
                 lines.append(html.escape(it["desc"][:200]))
             lines.append(f'<a href="{html.escape(it["link"])}">Open filing</a>{self._when(it.get("date"))}')
             return "\n".join(lines)
-        icon = "🚨" if IMPORTANT.search(it["title"]) else "📰"
+        c = it.get("contract")
+        big = c is not None and c >= CONTRACT_MIN
+        icon = ("🚨" if big or IMPORTANT.search(it["title"]) else "📰") + ("🏛️" if c is not None else "")
         srcs = it.get("sources") or [it.get("source", "")]
         src = html.escape(srcs[0]) + (f" +{len(srcs) - 1} more" if len(srcs) > 1 else "")
-        return (f"{icon} <b>${t}</b> {html.escape(it['title'])}\n"
+        extra = ""
+        if c is not None:
+            extra = f"🏛️ Contract win: <b>{impact.money(c)}</b>\n" if c else "🏛️ Contract news (amount not in headline)\n"
+        return (f"{icon} <b>${t}</b> {html.escape(it['title'])}\n{extra}"
                 f'<i>{src}</i>{self._when(it.get("date"))} · <a href="{html.escape(it["link"])}">Read</a>')

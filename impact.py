@@ -41,7 +41,12 @@ SPAM = re.compile(r"(class action|shareholder alert|investors? (who|with) (lost|
                   r"rosen|pomerantz|bragar|levi & korsinsky|deadline alert|encourages .* investors)", re.I)
 
 
-def rule_news(title):
+CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))
+
+
+def rule_news(title, contract=None):
+    if contract and contract >= CONTRACT_MIN and not SPAM.search(title):
+        return "up", "medium", f"contract win worth {money(contract)}"
     if SPAM.search(title):
         return "neutral", "low", "law-firm solicitation, usually no new information"
     p, n = POS.search(title), NEG.search(title)
@@ -120,6 +125,8 @@ SYSTEM = (
     "- confidence high only when the headline clearly states a material new event (FDA approval or rejection, "
     "trial success or failure, acquisition at a premium, large share offering, guidance change, bankruptcy, delisting).\n"
     "- For small biotechs, regulatory and trial news dominates; for large caps most headlines are neutral.\n"
+    "- contract wins: if contract_usd is given, judge it against the company's size; a contract that is large "
+    "relative to the company's revenue (common for small caps) is a clear up signal.\n"
     "- reason: at most 12 words, plain English, no hedging boilerplate."
 )
 SCHEMA = {
@@ -165,7 +172,8 @@ def _ai(items, companies):
             snip = ""
         payload.append({"id": i, "ticker": it["ticker"], "company": companies.get(it["ticker"], it["ticker"]),
                         "headline": it["title"], "source": ", ".join(it.get("sources") or [it.get("source", "")]),
-                        **({"snippet": snip} if snip else {})})
+                        **({"snippet": snip} if snip else {}),
+                        **({"contract_usd": int(it["contract"])} if it.get("contract") else {})})
     kwargs = dict(
         model=AI_MODEL,
         max_tokens=8000,
@@ -195,6 +203,8 @@ def assign(items, companies, notify):
     for it in todo:
         if it["kind"] == "sec":
             it["impact"] = (*rule_sec(it), "rules")
+        elif it["kind"] == "gov":
+            it["impact"] = ("up", "low", f"federal contract {money(it['amount'])} (may already be public)", "rules")
     if news and ai_enabled():
         try:
             res = _ai(news, companies)
@@ -210,7 +220,7 @@ def assign(items, companies, notify):
                 notify(f"⚠️ AI impact predictions are off ({why}); using keyword rules instead.")
     for it in news:
         if "impact" not in it:
-            it["impact"] = (*rule_news(it["title"]), "rules")
+            it["impact"] = (*rule_news(it["title"], it.get("contract")), "rules")
 
 
 def label(impact):
