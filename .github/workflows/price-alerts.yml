@@ -37,7 +37,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SEC_CONTACT: ${{ secrets.SEC_CONTACT }}           # contact email the SEC requires; SEC filings off if unset
           NEWS: "true"                                       # news headlines + filings to the same channel
-          NEWS_SECONDS: "300"
+          NEWS_SECONDS: "60"                                 # SEC, Yahoo, FDA every minute; Google News every 5 min
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # optional; keyword rules are used if unset
           AI_MODEL: claude-haiku-5-5                         # or claude-opus-5-5 (smarter, ~20x the cost)
           NEWS_EXCLUDE: ORCL                                 # price alerts only, no news/filings for these
