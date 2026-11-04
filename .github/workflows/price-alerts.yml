@@ -25,11 +25,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Watch prices + Substack chat (~5h45m)
+      - name: Watch prices + news + Substack chat (~5h45m)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.PRICEHINIO_ALERT }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUBSTACK_COOKIE: ${{ secrets.SUBSTACK_COOKIE }}   # optional; forwarding is off if unset
+          SEC_CONTACT: ${{ secrets.SEC_CONTACT }}           # contact email the SEC requires; SEC filings off if unset
+          NEWS: "true"                                       # news headlines + filings to the same channel
+          NEWS_SECONDS: "300"
+          NEWS_IMPORTANT_ONLY: ""                            # e.g. "ORCL,KLAR" to get only 🚨 headlines for those
           TICKERS: GLXY,CHRS,CAPR,CRTO,KLAR,ZIM,ORCL,BZUN,DXYZ,MIST,IMRX,VRRM,SLS,VNDA
           THRESHOLD_PCT: "2"
           POLL_SECONDS: "60"
