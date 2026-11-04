@@ -16,14 +16,18 @@ Env vars:
   THRESHOLD_PCT        default 2
   POLL_SECONDS         default 60
   STATE_FILE           default ./state.json
+  SUBSTACK_COOKIE      optional: value of your substack.sid cookie. When set, every new
+                       message and reply in your Substack group chats is forwarded too.
 """
 
 import html
 import json
 import logging
 import os
+import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -39,6 +43,11 @@ STARTUP_MESSAGE = os.environ.get("STARTUP_MESSAGE", "true").lower() == "true"
 ERROR_ALERT_AFTER = 15 * 60  # tell Telegram if a ticker can't be fetched for 15 min
 
 UA = "Mozilla/5.0 (compatible; price-alert-bot/1.0)"
+SUBSTACK_COOKIE = os.environ.get("SUBSTACK_COOKIE", "").strip()
+if SUBSTACK_COOKIE.startswith("substack.sid="):
+    SUBSTACK_COOKIE = SUBSTACK_COOKIE[len("substack.sid="):]
+SUBSTACK_API = "https://substack.com/api/v1"
+TG_LIMIT = 3900  # Telegram max is 4096 chars; leave room for the header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 log = logging.getLogger("bot")
@@ -51,20 +60,45 @@ def http_get_json(url, timeout=15):
         return json.loads(r.read().decode())
 
 
-def send_telegram(text):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
-                                   "disable_web_page_preview": "true"}).encode()
-    for attempt in range(3):
+def telegram_call(method, params):
+    url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+    data = urllib.parse.urlencode({"chat_id": CHAT_ID, **params}).encode()
+    for attempt in range(4):
         try:
             req = urllib.request.Request(url, data=data, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=20) as r:
                 if json.loads(r.read().decode()).get("ok"):
                     return True
+        except urllib.error.HTTPError as e:
+            wait = 3 * (attempt + 1)
+            try:
+                body = json.loads(e.read().decode())
+                wait = max(wait, int(body.get("parameters", {}).get("retry_after", 0)) + 1)
+                reason = body.get("description", "")
+            except Exception:
+                reason = ""
+            log.warning("Telegram %s failed (attempt %d): HTTP %s %s", method, attempt + 1, e.code, reason)
+            if e.code == 400:  # bad request won't succeed on retry
+                if params.get("parse_mode") == "HTML":  # fall back to plain text once
+                    plain = dict(params)
+                    plain.pop("parse_mode")
+                    plain["text"] = html.unescape(re.sub(r"<[^>]+>", "", params.get("text", "")))
+                    return telegram_call(method, plain) or "dropped"
+                return "dropped" if method == "sendMessage" else False
+            time.sleep(wait)
         except Exception as e:
-            log.warning("Telegram send failed (attempt %d): %s", attempt + 1, e)
+            log.warning("Telegram %s failed (attempt %d): %s", method, attempt + 1, type(e).__name__)
             time.sleep(3 * (attempt + 1))
     return False
+
+
+def send_telegram(text):
+    return telegram_call("sendMessage", {"text": text, "parse_mode": "HTML",
+                                         "disable_web_page_preview": "true"})
+
+
+def send_photo(url):
+    return telegram_call("sendPhoto", {"photo": url})
 
 
 # ---------------------------------------------------------------- price source
@@ -118,6 +152,160 @@ def save_state(state):
     with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
     os.replace(tmp, STATE_FILE)
+
+
+# ---------------------------------------------------------------- Substack chat
+# Logs never contain message text, names or chat ids (the repo and its logs are public),
+# and state.json only stores ids/timestamps.
+class SubstackAuthError(Exception):
+    pass
+
+
+def substack_get(path):
+    req = urllib.request.Request(SUBSTACK_API + path, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+        "Accept": "application/json",
+        "Cookie": f"substack.sid={SUBSTACK_COOKIE}",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 402, 403):
+            raise SubstackAuthError(f"HTTP {e.code}")
+        raise
+
+
+def substack_channels():
+    data = substack_get("/messages/inbox?tab=all")
+    out = {}
+    for t in data.get("threads", []):
+        ch = t.get("channel") or {}
+        if t.get("type") == "chat" and ch.get("id"):
+            out[ch["id"]] = ch.get("name") or "Chat"
+    return out
+
+
+def comments_since(thread_id, since):
+    """Replies in a thread created strictly after `since` (ISO string), oldest first."""
+    out, cursor = [], since
+    for _ in range(20):
+        q = "order=asc&" + (f"after={urllib.parse.quote(cursor)}" if cursor else "initial=true")
+        data = substack_get(f"/community/posts/{thread_id}/comments?{q}")
+        batch = [r for r in data.get("replies", []) if r["comment"]["created_at"] > (since or "")]
+        new = [r for r in batch if r["comment"]["created_at"] > (cursor or "")]
+        out.extend(new)
+        if not data.get("moreAfter") or not new:
+            break
+        cursor = new[-1]["comment"]["created_at"]
+    seen, uniq = set(), []
+    for r in out:
+        if r["comment"]["id"] not in seen:
+            seen.add(r["comment"]["id"])
+            uniq.append(r)
+    return uniq
+
+
+def snippet(text, n=60):
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def images(item):
+    return [m["url"] for m in (item.get("mediaAttachments") or [])
+            if m.get("type") == "image" and m.get("url")]
+
+
+def send_chat_message(header, body, link, pics):
+    body = (body or "").strip()
+    footer = f'\n\n<a href="{html.escape(link)}">Open in Substack</a>'
+    chunks = [html.escape(body[i:i + TG_LIMIT // 2]) for i in range(0, len(body), TG_LIMIT // 2)] or [""]
+    for i, chunk in enumerate(chunks):
+        text = (header + ("\n\n" + chunk if chunk else "")) if i == 0 else chunk
+        if i == len(chunks) - 1:
+            text += footer
+        if not send_telegram(text):
+            return False
+    for p in pics:
+        send_photo(p)  # best effort; a failed image shouldn't block the queue
+    return True
+
+
+def who(user, role):
+    name = html.escape((user or {}).get("name") or "Someone")
+    return f"⭐ <b>{name}</b>" if role == "admin" else f"<b>{name}</b>"
+
+
+def substack_check(state):
+    """Forward new threads and replies. Returns True if state changed."""
+    sub = state.setdefault("_substack", {})
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    channels = substack_channels()
+    events = []  # (created_at, kind, channel_id, thread, comment)
+    changed = False
+
+    for cid, cname in channels.items():
+        ch = sub.get(cid)
+        data = substack_get(f"/chat/channels/{cid}/posts")
+        threads = data.get("threads", [])
+        if ch is None:  # first time we see this chat: start from now, don't replay history
+            sub[cid] = {"last_post": max([t["communityPost"]["created_at"] for t in threads] or [now_iso]),
+                        "since": now_iso, "threads": {}}
+            changed = True
+            log.info("Substack: started watching a chat (%d recent threads)", len(threads))
+            continue
+        tracked = ch["threads"]
+        for t in sorted(threads, key=lambda t: t["communityPost"]["created_at"]):
+            p = t["communityPost"]
+            if p.get("status") in ("deleted", "removed"):
+                continue
+            is_new = p["created_at"] > ch["last_post"]
+            if is_new:
+                events.append((p["created_at"], "thread", cid, t, None))
+            seen = tracked.get(p["id"]) or (p["created_at"] if is_new else ch["since"])
+            last_c = p.get("max_comment_created_at") or p.get("most_recent_comment_created_at")
+            if last_c and last_c > seen:
+                for r in comments_since(p["id"], seen):
+                    if r["comment"].get("status") not in ("deleted", "removed"):
+                        events.append((r["comment"]["created_at"], "reply", cid, t, r))
+        # forget threads that dropped off the recent list
+        keep = {t["communityPost"]["id"] for t in threads}
+        for tid in list(tracked):
+            if tid not in keep:
+                del tracked[tid]
+                changed = True
+
+    events.sort(key=lambda e: e[0])
+    sent = 0
+    for created, kind, cid, t, r in events:
+        p = t["communityPost"]
+        ch = sub[cid]
+        cname = html.escape(channels[cid])
+        link = f"https://substack.com/chat/group/{cid}/post/{p['id']}"
+        if kind == "thread":
+            icon = "📢" if p.get("user_pub_role") == "admin" else "💬"
+            header = f"{icon} <b>{cname}</b> · {who(t.get('user'), p.get('user_pub_role'))}"
+            ok = send_chat_message(header, p.get("body"), link, images(p))
+        else:
+            c = r["comment"]
+            header = (f"↳ <b>{cname}</b> · {who(r.get('user'), c.get('user_pub_role'))}\n"
+                      f"<i>reply to: “{html.escape(snippet(p.get('body')))}”</i>")
+            ok = send_chat_message(header, c.get("body"), link, images(c))
+        if not ok:
+            log.warning("Substack: Telegram send failed, will retry next poll")
+            break
+        sent += 1
+        changed = True
+        if kind == "thread":
+            ch["last_post"] = max(ch["last_post"], created)
+            ch["threads"].setdefault(p["id"], created)
+        else:
+            ch["threads"][p["id"]] = max(ch["threads"].get(p["id"], ""), created)
+        time.sleep(1.1)  # stay under Telegram's per-channel rate limit
+    if sent:
+        log.info("Substack: forwarded %d message(s)", sent)
+    return changed
 
 
 # ---------------------------------------------------------------- main loop
@@ -182,13 +370,38 @@ def main():
                 lines.append(f"${t}: ${fmt_price(p)} ({sess})")
             except Exception as e:
                 lines.append(f"${t}: fetch error ({html.escape(str(e))})")
-        send_telegram(f"✅ Price alert bot started. Alerts every ±{THRESHOLD * 100:g}%.\n" + "\n".join(lines))
+        extra = "\nSubstack chat forwarding: ON" if SUBSTACK_COOKIE else ""
+        send_telegram(f"✅ Price alert bot started. Alerts every ±{THRESHOLD * 100:g}%.{extra}\n" + "\n".join(lines))
+
+    substack_on = bool(SUBSTACK_COOKIE)
+    substack_fail_since = None
+    if substack_on:
+        log.info("Substack chat forwarding enabled")
 
     started = time.time()
     while True:
         changed = False
         for t in TICKERS:
             changed |= check(t, state, errors)
+        if substack_on:
+            try:
+                changed |= substack_check(state)
+                if substack_fail_since == "notified":
+                    send_telegram("✅ Substack chat forwarding recovered.")
+                substack_fail_since = None
+            except SubstackAuthError as e:
+                log.warning("Substack login rejected (%s); forwarding paused until next run", e)
+                send_telegram("⚠️ <b>Substack login expired</b> — chat messages are NOT being forwarded.\n"
+                              "Copy a fresh <code>substack.sid</code> cookie into the SUBSTACK_COOKIE "
+                              "secret on GitHub, then restart the workflow.")
+                substack_on = False
+            except Exception as e:
+                log.warning("Substack check failed: %s", type(e).__name__)
+                if substack_fail_since is None:
+                    substack_fail_since = time.time()
+                elif substack_fail_since != "notified" and time.time() - substack_fail_since > ERROR_ALERT_AFTER:
+                    send_telegram("⚠️ Can't reach Substack chat for 15+ min; will keep trying.")
+                    substack_fail_since = "notified"
         if changed:
             save_state(state)
         if MAX_RUNTIME and time.time() - started + POLL_SECONDS >= MAX_RUNTIME:
