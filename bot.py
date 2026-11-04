@@ -26,6 +26,8 @@ Env vars:
                        optional third-party chat source (set only on the phone). When set, every new
                        message and reply in your group chats there is forwarded too.
   THIRDPARTY_CONNECT_SID optional second session cookie, if your account has one.
+  CONTRACTS            "true" (default) = also scan 15 markets for contract wins by any small/mid cap
+                       (see contracts.py; needs ANTHROPIC_API_KEY). CONTRACTS_CHAT_ID = optional separate channel.
 """
 
 import html
@@ -42,12 +44,15 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import contracts
 import extras
 import watchlist
 from news import NewsWatcher
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+CONTRACTS_CHAT_ID = os.environ.get("CONTRACTS_CHAT_ID", "").strip() or CHAT_ID
+CONTRACT_SCAN_SECONDS = int(os.environ.get("CONTRACT_SCAN_SECONDS", "60"))  # one market per scan
 TICKERS = watchlist.TICKERS
 THRESHOLDS = watchlist.THRESHOLDS  # ticker -> fraction, e.g. 0.02
 HEARTBEAT_ROLE = os.environ.get("HEARTBEAT_ROLE", "").strip().lower()
@@ -98,9 +103,9 @@ def telegram_api(method, params):
         return None
 
 
-def telegram_call(method, params):
+def telegram_call(method, params, chat=None):
     url = f"https://api.telegram.org/bot{TOKEN}/{method}"
-    data = urllib.parse.urlencode({"chat_id": CHAT_ID, **params}).encode()
+    data = urllib.parse.urlencode({"chat_id": chat or CHAT_ID, **params}).encode()
     for attempt in range(4):
         try:
             req = urllib.request.Request(url, data=data, headers={"User-Agent": UA})
@@ -121,7 +126,7 @@ def telegram_call(method, params):
                     plain = dict(params)
                     plain.pop("parse_mode")
                     plain["text"] = html.unescape(re.sub(r"<[^>]+>", "", params.get("text", "")))
-                    return telegram_call(method, plain) or "dropped"
+                    return telegram_call(method, plain, chat) or "dropped"
                 return "dropped" if method == "sendMessage" else False
             time.sleep(wait)
         except Exception as e:
@@ -130,14 +135,14 @@ def telegram_call(method, params):
     return False
 
 
-def send_telegram(text, silent=None):
+def send_telegram(text, silent=None, chat=None):
     """silent=None: decide from the message type (routine news / filings arrive without sound)."""
     if silent is None:
         silent = extras.is_quiet(text)
     params = {"text": text, "parse_mode": "HTML", "disable_web_page_preview": "true"}
     if silent:
         params["disable_notification"] = "true"
-    return telegram_call("sendMessage", params)
+    return telegram_call("sendMessage", params, chat)
 
 
 def send_photo(url):
@@ -522,6 +527,10 @@ def main():
             extra += "\n<i>Up/down guesses are automated and can be wrong — not financial advice.</i>"
         if TICKERS:
             extra += "\nAlso: trading halts ⏸️, unusual volume 📊, catalyst calendar 📅, daily check ☀️"
+        if HEARTBEAT_ROLE != "phone" and contracts.ON:
+            extra += ("\nContract scan 🏛️: " + (contracts.ContractScanner.label()
+                      + (" → separate channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
+                      if contracts.ContractScanner.enabled() else "OFF (needs ANTHROPIC_API_KEY)"))
         send_telegram(f"✅ Price alert bot started.{extra}\n" + "\n".join(lines))
 
     thirdparty_on = bool(TP_COOKIE)
@@ -531,6 +540,11 @@ def main():
 
     news = NewsWatcher(NEWS_TICKERS, send_telegram) if NEWS_ON else None
     last_news = 0
+    scanner = None
+    if HEARTBEAT_ROLE != "phone" and contracts.ContractScanner.enabled():
+        scanner = contracts.ContractScanner(lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID),
+                                            skip_symbols=TICKERS)
+    last_scan = 0
 
     battery = BatteryWatch()
     halts = extras.HaltWatcher(TICKERS, send_telegram)
@@ -553,6 +567,12 @@ def main():
                 changed |= news.check(state)
             except Exception as e:
                 log.warning("News check failed: %s", type(e).__name__)
+        if scanner and time.time() - last_scan >= CONTRACT_SCAN_SECONDS:
+            last_scan = time.time()
+            try:
+                changed |= scanner.check(state)
+            except Exception as e:
+                log.warning("Contract scan failed: %s", type(e).__name__)
         if thirdparty_on:
             try:
                 changed |= thirdparty_check(state)
