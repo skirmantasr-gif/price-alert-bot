@@ -177,11 +177,11 @@ def yahoo_news(ticker):
     return out
 
 
-def fda_news():
+def fda_news(tickers):
     url = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml"
     out = []
     for it in _rss_items(_get(url)):
-        for t in COMPANIES:
+        for t in tickers:
             if _matches(it["title"] + " " + it["desc"], t):
                 out.append({**it, "ticker": t, "source": "FDA.gov"})
     return out
@@ -451,7 +451,7 @@ class NewsWatcher:
                 for f in res:
                     consider(_hash("sec|" + f["acc"]), {**f, "ticker": t, "kind": "sec"}, silent)
                 time.sleep(0.2)  # SEC asks for <10 requests/second
-        res, silent = run("FDA", fda_news)
+        res, silent = run("FDA", fda_news, self.tickers)
         for it in res:
             consider(_hash(it["ticker"] + "|fda|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
 

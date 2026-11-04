@@ -54,6 +54,9 @@ if SUBSTACK_COOKIE.startswith("substack.sid="):
 SUBSTACK_API = "https://substack.com/api/v1"
 NEWS_ON = os.environ.get("NEWS", "true").lower() == "true"
 NEWS_SECONDS = int(os.environ.get("NEWS_SECONDS", "300"))
+# Tickers that keep price alerts but get no news / SEC / insider messages
+NEWS_EXCLUDE = {t.strip().upper() for t in os.environ.get("NEWS_EXCLUDE", "").split(",") if t.strip()}
+NEWS_TICKERS = [t for t in TICKERS if t not in NEWS_EXCLUDE]
 TG_LIMIT = 3900  # Telegram max is 4096 chars; leave room for the header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
@@ -403,7 +406,9 @@ def main():
                 lines.append(f"${t}: fetch error ({html.escape(str(e))})")
         extra = "\nSubstack chat forwarding: ON" if SUBSTACK_COOKIE else ""
         if NEWS_ON:
-            extra += f"\nNews alerts: ON ({NewsWatcher(TICKERS, None).sources_label()})"
+            extra += f"\nNews alerts: ON ({NewsWatcher(NEWS_TICKERS, None).sources_label()})"
+            if NEWS_EXCLUDE:
+                extra += f"\nNo news for: {', '.join(sorted(NEWS_EXCLUDE))}"
             extra += "\n<i>Up/down guesses are automated and can be wrong — not financial advice.</i>"
         send_telegram(f"✅ Price alert bot started. Alerts every ±{THRESHOLD * 100:g}%.{extra}\n" + "\n".join(lines))
 
@@ -412,7 +417,7 @@ def main():
     if substack_on:
         log.info("Substack chat forwarding enabled")
 
-    news = NewsWatcher(TICKERS, send_telegram) if NEWS_ON else None
+    news = NewsWatcher(NEWS_TICKERS, send_telegram) if NEWS_ON else None
     last_news = 0
 
     started = time.time()
