@@ -139,7 +139,10 @@ def fetch_price(ticker):
             price, ts = float(c), t
             break
     if price is None:
+        # No trade yet in today's chart (e.g. right at 4am ET pre-market open): Yahoo's regularMarketPrice is
+        # then yesterday's close, which would trigger a false alert against an after-hours reference.
         price = float(meta["regularMarketPrice"])
+        return price, (float(prev_close) if prev_close else None), "stale"
 
     session = "regular"
     periods = meta.get("currentTradingPeriod") or {}
@@ -419,6 +422,8 @@ def check(ticker, state, errors):
     if err and err["notified"]:
         send_telegram(f"✅ <b>${ticker}</b> price feed recovered: ${fmt_price(price)}")
     s = state.get(ticker)
+    if session == "stale" and s is not None:
+        return False  # no fresh trade yet; wait for a real one
     if s is None:
         state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
         log.info("%s baseline set at %.4f", ticker, price)
