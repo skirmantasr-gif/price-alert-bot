@@ -28,11 +28,10 @@ jobs:
       - name: Install Claude SDK (for AI impact predictions)
         run: pip install --quiet "anthropic>=0.125,<1"
 
-      - name: Watch prices + news + Substack chat (~5h45m)
+      - name: Watch prices + news (~5h45m)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.PRICEHINIO_ALERT }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SUBSTACK_COOKIE: ${{ secrets.SUBSTACK_COOKIE }}   # optional; forwarding is off if unset
           SEC_CONTACT: ${{ secrets.SEC_CONTACT }}           # contact email the SEC requires; SEC filings off if unset
           NEWS: "true"                                       # news headlines + filings to the same channel
           NEWS_SECONDS: "300"
