@@ -38,6 +38,11 @@ from email.utils import parsedate_to_datetime
 
 import impact
 
+try:
+    import learn
+except ImportError:
+    learn = None
+
 log = logging.getLogger("bot")
 UA = "Mozilla/5.0 (compatible; price-alert-bot/1.0)"
 
@@ -108,6 +113,49 @@ CEILING_RE = re.compile(r"(\bIDIQ\b|indefinite[- ]delivery|\bceiling\b|\bup to\b
                         r"单价合同|上限金額|上限额)", re.I)
 OLD_NEWS_HOURS = 18   # older headlines never get 🚨 (the price has usually reacted already)
 VERIFY_RATIO = 0.0    # every candidate is double-checked with a second news search first (~10 a day)
+
+# How to find a stock on the owner's platforms (IBKR, Trading 212, Revolut). Availability is the usual situation
+# for an EU retail account, not a per-stock check (the platforms have no public instrument list).
+# suffix -> (exchange name, IBKR exchange code, Trading 212, Revolut)
+WHERE = {
+    "":   ("NYSE/Nasdaq", "SMART", "✅", "✅"),
+    "DE": ("Xetra", "IBIS", "✅ usually", "⚠️ some"),
+    "PA": ("Euronext Paris", "SBF", "✅ usually", "⚠️ some"),
+    "AS": ("Euronext Amsterdam", "AEB", "✅ usually", "⚠️ some"),
+    "L":  ("London", "LSE", "✅ usually", "⚠️ some"),
+    "SW": ("SIX Swiss", "EBS", "✅ usually", "⚠️ some"),
+    "ST": ("Nasdaq Stockholm", "SFB", "⚠️ some", "❌"),
+    "TO": ("Toronto", "TSE", "❌", "❌"),
+    "V":  ("TSX Venture", "VENTURE", "❌", "❌"),
+    "AX": ("ASX Sydney", "ASX", "❌", "❌"),
+    "T":  ("Tokyo", "TSEJ", "❌", "❌"),
+    "HK": ("Hong Kong", "SEHK", "❌", "❌"),
+    "SS": ("Shanghai", "SEHKNTL", "❌", "❌"),      # IBKR via Stock Connect, only for eligible shares
+    "SZ": ("Shenzhen", "SEHKSZSE", "❌", "❌"),
+}
+NOT_ON_PLATFORMS = {"NS", "BO", "TW", "TWO", "KS", "KQ"}  # India, Taiwan, Korea: none of the three
+
+
+def tradable(sym):
+    return _split(sym)[1] not in NOT_ON_PLATFORMS
+
+
+def where_to_buy(sym, name):
+    root, suf = _split(sym)
+    if suf in NOT_ON_PLATFORMS:
+        return [f"🔎 <code>{html.escape(sym)}</code> · {SUFFIX[suf][0]} — ❌ not on IBKR / Trading 212 / Revolut "
+                "for EU accounts (just for information)"]
+    exch, ib, t212, rev = WHERE.get(suf, (SUFFIX.get(suf, ("?",))[0], "", "❌", "❌"))
+    ib_sym = root.lstrip("0") if suf in ("HK",) else root
+    ib_txt = f"<code>{html.escape(ib_sym)}</code>" + (f" @ {ib}" if ib and ib != "SMART" else "")
+    if suf in ("SS", "SZ"):
+        ib_txt += " (Stock Connect, if eligible)"
+    lines = [f"🔎 <b>Find it:</b> <code>{html.escape(root)}</code> on {exch} (Yahoo: {html.escape(sym)})",
+             f"IBKR ✅ {ib_txt} · Trading 212 {t212} · Revolut {rev}"]
+    if suf and (t212 != "❌" or rev != "❌"):
+        lines[-1] += f" — if the symbol isn't found, search “{html.escape(name[:40])}”"
+    return lines
+
 
 SPDR_ETFS = ["SPSM", "SPMD", "XAR", "XBI", "XSW", "XTN", "XHE", "XES", "XME", "XHB", "XLI", "XNTK",
              "GWX", "EWX", "GXC", "SPDW", "SPEM"]
@@ -258,6 +306,10 @@ class Yahoo:
         self.sym[k] = found
         return found
 
+    def price(self, sym):
+        j = json.loads(_get(f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?interval=1d&range=5d"))
+        return float(j["chart"]["result"][0]["meta"]["regularMarketPrice"])
+
     def market_cap_usd(self, sym):
         hit = self.cap.get(sym)
         if hit and time.time() - hit[0] < 12 * 3600:
@@ -378,6 +430,7 @@ class ContractScanner:
         self.etfs = etfs or ETFIndex()
         self.turn = 0
         self.failed_ai = 0
+        self.state = None
 
     @staticmethod
     def enabled():
@@ -408,6 +461,7 @@ class ContractScanner:
 
     def check(self, state):
         """Search the next market; returns True if state changed."""
+        self.state = state
         cw = state.setdefault("_cw", {})
         seen = cw.setdefault("seen", {})
         init = cw.setdefault("init", {})
@@ -504,10 +558,19 @@ class ContractScanner:
         age_h = (datetime.now(timezone.utc) - it["date"]).total_seconds() / 3600 if it.get("date") else None
         if big and age_h is not None and age_h > OLD_NEWS_HOURS:
             big = False
+        if big and not tradable(sym):
+            big = False  # can't be bought on the owner's platforms: inform quietly
         it = {**it, "age_h": age_h}
         text = self.format(it, r, sym, name, usd, cap, ratio, big)
         if self.send(text, not big):
             sent.append([sym, round(usd / 1e6, 2), today])
+            if learn and self.state is not None:
+                try:
+                    learn.record(self.state, "contract", sym, "up", "high" if big else "low", "rules",
+                                 f"{r['kind']} {ratio * 100:.0f}% of cap" + ("" if tradable(sym) else " (not tradable)"),
+                                 self.yahoo.price(sym))
+                except Exception as e:
+                    log.warning("Contract learning record failed: %s", type(e).__name__)
             return True
         return False
 
@@ -561,8 +624,9 @@ class ContractScanner:
                  f"{kind}" + (f" · Buyer: {html.escape(r['buyer'][:80])}" if r["buyer"] else "")]
         if r["summary"]:
             lines.append(html.escape(r["summary"][:120]))
+        lines += where_to_buy(sym, name)
         h = self.etfs.holders(sym)
-        lines.append("ETFs: " + (", ".join(f"{e} {w:.2f}%" if w >= 0.01 else f"{e} &lt;0.01%" for e, w in h) if h else "none of the tracked SPDR funds"))
+        lines.append("ETFs (US-listed, EU accounts usually can't buy them): " + (", ".join(f"{e} {w:.2f}%" if w >= 0.01 else f"{e} &lt;0.01%" for e, w in h) if h else "none of the tracked SPDR funds"))
         link = it["link"] if it["link"].startswith("https://") else ""
         src = html.escape(it["title"][:160])
         age = it.get("age_h")
