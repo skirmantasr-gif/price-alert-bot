@@ -101,6 +101,14 @@ CONTRACT_WORD = re.compile(r"(contract|award|order|task order|idiq|tender|framew
                            r"auftrag|rahmenvertrag|zuschlag|contrat|marché|commande|opdracht|uppdrag|avtal|"
                            r"受注|落札|中标|中標|合同|合約|得標|標案|接單|수주|공급계약|낙찰)", re.I)
 
+# Words that mark a maximum / framework rather than a firm order (checked in headline + snippet + extra context)
+CEILING_RE = re.compile(r"(\bIDIQ\b|indefinite[- ]delivery|\bceiling\b|\bup to\b|potential (total )?value|"
+                        r"blanket purchase|\bBPA\b|multiple[- ]award|framework|rate contract|"
+                        r"Rahmenvertrag|accord[- ]cadre|raamovereenkomst|ramavtal|共同供應契約|共契|框架|入围|入圍|"
+                        r"单价合同|上限金額|上限额)", re.I)
+OLD_NEWS_HOURS = 18   # older headlines never get 🚨 (the price has usually reacted already)
+VERIFY_RATIO = 0.0    # every candidate is double-checked with a second news search first (~10 a day)
+
 SPDR_ETFS = ["SPSM", "SPMD", "XAR", "XBI", "XSW", "XTN", "XHE", "XES", "XME", "XHB", "XLI", "XNTK",
              "GWX", "EWX", "GXC", "SPDW", "SPEM"]
 CCY_SUFFIX = {"USD": [""], "GBP": ["L"], "EUR": ["DE", "PA", "AS"], "SEK": ["ST"], "CHF": ["SW"], "JPY": ["T"],
@@ -122,6 +130,9 @@ For each item return:
 - currency: ISO code (USD, EUR, GBP, JPY, CNY, HKD, TWD, KRW, INR, SEK, CHF, CAD, AUD...).
 - kind: "new" (a new contract/order), "modification" (add-on to an existing contract), "ceiling"
   (IDIQ / framework / "up to" / multiple-award maximum, not guaranteed spend), "option" (option exercised).
+  Use "ceiling" also for: multi-year enterprise / blanket purchase agreements, "worth up to", "potential value",
+  framework or panel places, Rahmenvertrag, accord-cadre, rate contracts, 共同供應契約 / 共契, 框架协议, 入围,
+  and whenever the stated total is shared by several winning suppliers or is a budget agencies may order from.
 - public_buyer: true if the buyer is a government, military, public agency, municipality, public hospital,
   state-owned company (e.g. State Grid, national railways) or international public body (ESA, NATO, EU).
 - buyer: short buyer name in English ("" if not stated).
@@ -338,7 +349,7 @@ def ai_extract(items):
     if _client is None:
         _client = anthropic.Anthropic(api_key=impact.API_KEY, max_retries=2, timeout=90)
     payload = [{"id": i, "market": it["market"], "headline": it["title"],
-                **({"snippet": it["desc"][:250]} if it.get("desc") and not it["desc"].startswith(it["title"][:30]) else {})}
+                **({"snippet": it["desc"][:it.get("snip", 250)]} if it.get("desc") and not it["desc"].startswith(it["title"][:30]) else {})}
                for i, it in enumerate(items)]
     kwargs = dict(
         model=impact.AI_MODEL,
@@ -476,13 +487,68 @@ class ContractScanner:
         for s_sym, s_m, _ in sent:
             if s_sym == sym and abs(s_m - usd / 1e6) <= 0.2 * max(s_m, usd / 1e6):
                 return False
+        if r["kind"] == "new" and CEILING_RE.search(f"{it['title']} {it.get('desc', '')}"):
+            r = {**r, "kind": "ceiling"}
         ratio = usd / cap
         big = ratio >= (BIG_NEW if r["kind"] == "new" else BIG_OTHER)
+        if ratio >= VERIFY_RATIO:
+            r = self.verify(it, r, name)
+            if r is None:
+                log.info("Contract scan: candidate dropped after second check")
+                return False
+            usd2 = r["amount"] * self.yahoo.fx_rate(r["currency"]) if r["amount"] > 0 else usd
+            if usd2 >= MIN_USD:
+                usd = usd2
+            ratio = usd / cap
+            big = ratio >= (BIG_NEW if r["kind"] == "new" else BIG_OTHER)
+        age_h = (datetime.now(timezone.utc) - it["date"]).total_seconds() / 3600 if it.get("date") else None
+        if big and age_h is not None and age_h > OLD_NEWS_HOURS:
+            big = False
+        it = {**it, "age_h": age_h}
         text = self.format(it, r, sym, name, usd, cap, ratio, big)
         if self.send(text, not big):
             sent.append([sym, round(usd / 1e6, 2), today])
             return True
         return False
+
+    def verify(self, it, r, name):
+        """Second look before a loud alert: search the news for more coverage of the same award and let the
+        AI re-read the headline with that context (catches IDIQ ceilings, shared frameworks, old news, wrong
+        winner). Returns the corrected reading, or None if it is not a real win after all."""
+        market = next((m for m in MARKETS if m[0] == it["market"]), MARKETS[0])
+        _, hl, gl, ceid, _ = market
+        word = " ".join(re.sub(r"[^\w\s&.-]", " ", name).split()[:3])
+        extra = []
+        try:
+            url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
+                {"q": f'"{word}" when:3d', "hl": hl, "gl": gl, "ceid": ceid})
+            for x in ET.fromstring(_get(url)).iter("item"):
+                t = html.unescape((x.findtext("title") or "").strip())
+                d = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", x.findtext("description") or "")).split())
+                if t and t != it["title"]:
+                    extra.append(t + (" — " + d[:200] if d and not d.startswith(t[:30]) else ""))
+                if len(extra) >= 8:
+                    break
+        except Exception as e:
+            log.warning("Contract second check search failed: %s", type(e).__name__)
+        ctx = " | ".join(extra)
+        if CEILING_RE.search(ctx) and r["kind"] == "new":
+            r = {**r, "kind": "ceiling"}
+        if not extra:
+            return r
+        try:
+            again = self.extract([{**it, "snip": 1500, "desc": ("Other coverage of this company in the last 3 days: " + ctx)[:1500]}])
+        except Exception as e:
+            log.warning("Contract second check AI failed: %s", type(e).__name__)
+            return r
+        r2 = again.get(0)
+        if not r2:
+            return r
+        if not r2["is_win"]:
+            return None
+        if r["kind"] == "ceiling" and r2["kind"] == "new":
+            r2 = {**r2, "kind": "ceiling"}  # a ceiling word was found: never upgrade back
+        return r2
 
     def format(self, it, r, sym, name, usd, cap, ratio, big):
         market = SUFFIX[_split(sym)[1]][0]
@@ -496,9 +562,13 @@ class ContractScanner:
         if r["summary"]:
             lines.append(html.escape(r["summary"][:120]))
         h = self.etfs.holders(sym)
-        lines.append("ETFs: " + (", ".join(f"{e} {w:.2f}%" if w >= 0.01 else f"{e} <0.01%" for e, w in h) if h else "none of the tracked SPDR funds"))
+        lines.append("ETFs: " + (", ".join(f"{e} {w:.2f}%" if w >= 0.01 else f"{e} &lt;0.01%" for e, w in h) if h else "none of the tracked SPDR funds"))
         link = it["link"] if it["link"].startswith("https://") else ""
         src = html.escape(it["title"][:160])
-        lines.append(f'<a href="{html.escape(link)}">{src}</a>' if link else src)
+        age = it.get("age_h")
+        when = ("" if age is None else f" · published {age:.0f}h ago" if age >= 1 else " · published &lt;1h ago")
+        if age is not None and age > OLD_NEWS_HOURS:
+            when += " (older news — the price may already reflect it)"
+        lines.append((f'<a href="{html.escape(link)}">{src}</a>' if link else src) + when)
         lines.append("<i>Automated reading of a headline — check the source. Not financial advice.</i>")
         return "\n".join(lines)
