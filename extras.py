@@ -45,7 +45,7 @@ def _strip(text):
 # ---------------------------------------------------------------- 1. quiet / loud
 # Messages starting with these arrive without sound; everything else (price moves, 🚨, halts, volume,
 # insider buys/sales, warnings) rings.
-QUIET_PREFIXES = ("📰", "📄", "⚪", "👤", "☀️", "✅")
+QUIET_PREFIXES = ("📰", "📄", "⚪", "👤", "☀️", "✅", "🧭")
 
 
 def is_quiet(text):

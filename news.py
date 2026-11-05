@@ -27,6 +27,7 @@ from email.utils import parsedate_to_datetime
 
 import extras
 import impact
+import insights
 import watchlist
 
 log = logging.getLogger("bot")
@@ -620,6 +621,7 @@ class NewsWatcher:
                 break
             self.queue.pop(0)
             extras.remember(it["ticker"], msg, it.get("link", ""))
+            insights.note(state, it)
             extras.bump(state, "sec" if it["kind"] == "sec" else "news")
             changed = True
             if it.get("contract") or it["kind"] == "gov":
