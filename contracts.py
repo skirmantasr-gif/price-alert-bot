@@ -140,7 +140,7 @@ def tradable(sym):
     return _split(sym)[1] not in NOT_ON_PLATFORMS
 
 
-def where_to_buy(sym, name):
+def where_to_buy(sym, name, isin=""):
     root, suf = _split(sym)
     if suf in NOT_ON_PLATFORMS:
         return [f"🔎 <code>{html.escape(sym)}</code> · {SUFFIX[suf][0]} — ❌ not on IBKR / Trading 212 / Revolut "
@@ -150,10 +150,12 @@ def where_to_buy(sym, name):
     ib_txt = f"<code>{html.escape(ib_sym)}</code>" + (f" @ {ib}" if ib and ib != "SMART" else "")
     if suf in ("SS", "SZ"):
         ib_txt += " (Stock Connect, if eligible)"
-    lines = [f"🔎 <b>Find it:</b> <code>{html.escape(root)}</code> on {exch} (Yahoo: {html.escape(sym)})",
+    lines = [f"🔎 <b>Find it:</b> <code>{html.escape(root)}</code> on {exch}"
+             + (f" · ISIN <code>{html.escape(isin)}</code>" if isin else f" (Yahoo: {html.escape(sym)})"),
              f"IBKR ✅ {ib_txt} · Trading 212 {t212} · Revolut {rev}"]
     if suf and (t212 != "❌" or rev != "❌"):
-        lines[-1] += f" — if the symbol isn't found, search “{html.escape(name[:40])}”"
+        lines[-1] += (" — if the symbol isn't found, search the ISIN" if isin
+                      else f" — if the symbol isn't found, search “{html.escape(name[:40])}”")
     return lines
 
 
@@ -390,6 +392,78 @@ class ETFIndex:
         return sorted(hits, key=lambda x: -x[1])[:5]
 
 
+# European (UCITS) ETFs: EU retail accounts can buy these, unlike US-listed funds. Official SPDR Europe daily
+# holdings files (ISIN, name, currency, weight). Funds chosen to cover small and mid caps in the scanned markets.
+UCITS_ETFS = [  # (file id, ticker, short name)
+    ("zprs-gy", "ZPRS", "SPDR MSCI World Small Cap"),
+    ("zprr-gy", "ZPRR", "SPDR Russell 2000 US Small Cap"),
+    ("zprv-gy", "ZPRV", "SPDR MSCI USA Small Cap Value"),
+    ("spy4-gy", "SPY4", "SPDR S&P 400 US Mid Cap"),
+    ("smc-fp", "SMC", "SPDR MSCI Europe Small Cap"),
+    ("zprx-gy", "ZPRX", "SPDR MSCI Europe Small Cap Value"),
+    ("spyx-gy", "SPYX", "SPDR MSCI EM Small Cap"),
+    ("spym-gy", "SPYM", "SPDR MSCI Emerging Markets"),
+    ("spyi-gy", "SPYI", "SPDR MSCI ACWI IMI (all world)"),
+]
+_NAME_SKIP = _GENERIC | {"class", "a", "b", "h", "shs", "shares", "ord", "reg", "registered", "adr", "the", "de", "of",
+                         "and", "kgaa", "spa", "oyj", "as", "asa", "bhd", "pcl", "tbk", "kk", "co"}
+
+
+def _name_words(s):
+    return [w for w in re.findall(r"[a-z0-9]+", (s or "").lower().replace("&", " and ")) if w not in _NAME_SKIP]
+
+
+def _name_match(a, b):
+    """Stricter than _same_name: the same distinctive words ("China Railway Group" != "China Railway Signal")."""
+    wa = _name_words(a)
+    return bool(wa) and wa == _name_words(b) and (len(wa) >= 2 or len(wa[0]) >= 3)
+
+
+class UCITSIndex:
+    """currency -> [(name, isin, etf ticker, etf name, etf isin, weight%)], built once per run."""
+
+    def __init__(self, etfs=UCITS_ETFS):
+        self.etfs, self.idx, self.loaded = etfs, {}, False
+
+    def load(self):
+        self.loaded = True
+        ok = 0
+        for fid, tick, short in self.etfs:
+            try:
+                rows = list(_xlsx_rows(_get("https://www.ssga.com/library-content/products/fund-data/etfs/emea/"
+                                            f"holdings-daily-emea-en-{fid}.xlsx", timeout=60)))
+                fund_isin = next((r[1] for r in rows[:6] if r[:1] == ["ISIN:"] and len(r) > 1), "")
+                head = next(i for i, r in enumerate(rows) if r[:1] == ["ISIN"])
+                cols = rows[head]
+                ni, ci, wi = cols.index("Security Name"), cols.index("Currency"), cols.index("Percent of Fund")
+                for r in rows[head + 1:]:
+                    if len(r) <= max(ni, ci, wi) or not r[0] or not r[ni]:
+                        continue
+                    try:
+                        w = float(r[wi])
+                    except ValueError:
+                        continue
+                    self.idx.setdefault(r[ci].upper(), []).append((r[ni], r[0], tick, short, fund_isin, w))
+                ok += 1
+            except Exception as e:
+                log.warning("UCITS holdings %s failed: %s", tick, type(e).__name__)
+        log.info("UCITS ETF holdings loaded: %d/%d funds", ok, len(self.etfs))
+
+    def holders(self, sym, name):
+        """(stock ISIN or '', [(etf ticker, etf name, etf isin, weight%)]) for a Yahoo symbol + company name."""
+        if not self.loaded:
+            self.load()
+        ccy = SUFFIX.get(_split(sym)[1], ("", "USD"))[1]
+        hits = [h for h in self.idx.get(ccy, []) if _name_match(name, h[0])]
+        isins = {h[1] for h in hits}
+        if len(isins) > 1:  # two different companies matched: keep the closest name
+            best = min(hits, key=lambda h: abs(len(_name_words(h[0])) - len(_name_words(name))))[1]
+            hits = [h for h in hits if h[1] == best]
+        isin = hits[0][1] if hits else ""
+        out = sorted({(h[2], h[3], h[4], h[5]) for h in hits}, key=lambda x: -x[3])
+        return isin, out[:4]
+
+
 # ---------------------------------------------------------------- AI extraction
 _client = None
 
@@ -422,12 +496,13 @@ def ai_extract(items):
 
 # ---------------------------------------------------------------- scanner
 class ContractScanner:
-    def __init__(self, send, skip_symbols=(), extract=None, yahoo=None, etfs=None):
+    def __init__(self, send, skip_symbols=(), extract=None, yahoo=None, etfs=None, ucits=None):
         self.send = send                      # send(text, silent) -> truthy
         self.skip = {s.upper() for s in skip_symbols}  # watchlist stocks: news.py already covers them
         self.extract = extract or ai_extract
         self.yahoo = yahoo or Yahoo()
         self.etfs = etfs or ETFIndex()
+        self.ucits = ucits or UCITSIndex()
         self.turn = 0
         self.failed_ai = 0
         self.state = None
@@ -624,9 +699,24 @@ class ContractScanner:
                  f"{kind}" + (f" · Buyer: {html.escape(r['buyer'][:80])}" if r["buyer"] else "")]
         if r["summary"]:
             lines.append(html.escape(r["summary"][:120]))
-        lines += where_to_buy(sym, name)
+        try:
+            isin, eu = self.ucits.holders(sym, name)
+        except Exception:
+            isin, eu = "", []
+        lines += where_to_buy(sym, name, isin)
+        pct = lambda w: f"{w:.2f}%" if w >= 0.01 else "&lt;0.01%"
+        if eu:
+            lines.append("🇪🇺 <b>UCITS ETFs holding it</b> (buyable in EU accounts):")
+            lines += [f"• {html.escape(n)} — <code>{html.escape(t)}</code> · ISIN <code>{html.escape(i)}</code> · {pct(w)}"
+                      for t, n, i, w in eu]
+            if max(w for *_, w in eu) < 1:
+                lines.append("<i>Weight under 1%: these funds barely move with this stock — only buying the stock "
+                             "itself gives real exposure to the contract.</i>")
+        else:
+            lines.append("🇪🇺 UCITS ETFs: none of the tracked SPDR Europe funds hold it")
         h = self.etfs.holders(sym)
-        lines.append("ETFs (US-listed, EU accounts usually can't buy them): " + (", ".join(f"{e} {w:.2f}%" if w >= 0.01 else f"{e} &lt;0.01%" for e, w in h) if h else "none of the tracked SPDR funds"))
+        if h:
+            lines.append("US ETFs (not for EU accounts): " + ", ".join(f"{e} {pct(w)}" for e, w in h))
         link = it["link"] if it["link"].startswith("https://") else ""
         src = html.escape(it["title"][:160])
         age = it.get("age_h")
