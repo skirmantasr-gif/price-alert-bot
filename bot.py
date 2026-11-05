@@ -44,6 +44,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import buyout
 import contracts
 import extras
 import insights
@@ -57,6 +58,7 @@ from news import NewsWatcher
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 CONTRACTS_CHAT_ID = os.environ.get("CONTRACTS_CHAT_ID", "").strip() or CHAT_ID
+BUYOUT_CHAT_ID = os.environ.get("BUYOUT_CHAT_ID", "").strip()  # buyout watch is off without its own channel
 CONTRACT_SCAN_SECONDS = int(os.environ.get("CONTRACT_SCAN_SECONDS", "60"))  # one market per scan
 TICKERS = watchlist.TICKERS
 THRESHOLDS = watchlist.THRESHOLDS  # ticker -> fraction, e.g. 0.02
@@ -534,6 +536,9 @@ def main():
             extra += "\nAlso: trading halts ⏸️, unusual volume 📊, catalyst calendar 📅, daily check ☀️"
         if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS):
             extra += "\nHourly outlook 🧭: ON (10:00–16:00 New York, market days)"
+        if HEARTBEAT_ROLE != "phone" and buyout.ON:
+            extra += "\nBuyout watch 🎯: " + (buyout.BuyoutWatch.label() if buyout.BuyoutWatch.enabled() and BUYOUT_CHAT_ID
+                                              else "OFF (" + (buyout.ERROR or "BUYOUT or BUYOUT_CHAT_ID secret not set") + ")")
         if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
             extra += "\nLearning 🎓: ON (guesses checked against real prices, review every 2 days)"
         if HEARTBEAT_ROLE != "phone" and contracts.ON:
@@ -558,6 +563,8 @@ def main():
     battery = BatteryWatch()
     halts = extras.HaltWatcher(TICKERS, send_telegram)
     volume = extras.VolumeWatcher(http_get_json, send_telegram)
+    bo_watch = (buyout.BuyoutWatch(lambda text, silent: send_telegram(text, silent, BUYOUT_CHAT_ID))
+                if HEARTBEAT_ROLE != "phone" and BUYOUT_CHAT_ID and buyout.BuyoutWatch.enabled() else None)
     outlook = (insights.HourlyInsights(TICKERS, LAST_CHART, volume, send_telegram)
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on)
@@ -573,6 +580,8 @@ def main():
         for t in TICKERS:
             changed |= check(t, state, errors, volume)
         checks = [("Halt check", halts.check), ("Watchdog", heartbeat.check)]
+        if bo_watch:
+            checks.append(("Buyout watch", bo_watch.check))
         if outlook:
             checks.append(("Hourly outlook", outlook.check))
         if reviewer:
