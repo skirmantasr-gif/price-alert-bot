@@ -12,6 +12,11 @@ import logging
 import os
 import re
 
+try:
+    import learn
+except ImportError:  # phone copy without learn.py
+    learn = None
+
 log = logging.getLogger("bot")
 
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -177,7 +182,7 @@ def _ai(items, companies):
     kwargs = dict(
         model=AI_MODEL,
         max_tokens=8000,
-        system=SYSTEM,
+        system=SYSTEM + (learn.guidance("news") if learn else ""),
         messages=[{"role": "user", "content": "Classify each headline:\n" + json.dumps(payload, ensure_ascii=False)}],
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
     )

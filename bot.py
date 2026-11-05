@@ -47,6 +47,10 @@ from datetime import datetime, timezone
 import contracts
 import extras
 import insights
+try:
+    import learn
+except ImportError:  # phone copy without learn.py
+    learn = None
 import watchlist
 from news import NewsWatcher
 
@@ -530,6 +534,8 @@ def main():
             extra += "\nAlso: trading halts ⏸️, unusual volume 📊, catalyst calendar 📅, daily check ☀️"
         if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS):
             extra += "\nHourly outlook 🧭: ON (10:00–16:00 New York, market days)"
+        if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
+            extra += "\nLearning 🎓: ON (guesses checked against real prices, review every 2 days)"
         if HEARTBEAT_ROLE != "phone" and contracts.ON:
             extra += ("\nContract scan 🏛️: " + (contracts.ContractScanner.label()
                       + (" → separate channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
@@ -555,6 +561,11 @@ def main():
     outlook = (insights.HourlyInsights(TICKERS, LAST_CHART, volume, send_telegram)
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on)
+    reviewer = None
+    if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
+        learn.CHARTS = LAST_CHART
+        learn.Reviewer.attach(state)
+        reviewer = learn.Reviewer(http_get_json, send_telegram)
     started = time.time()
     while True:
         battery.check()
@@ -564,6 +575,8 @@ def main():
         checks = [("Halt check", halts.check), ("Watchdog", heartbeat.check)]
         if outlook:
             checks.append(("Hourly outlook", outlook.check))
+        if reviewer:
+            checks.append(("Learning review", reviewer.check))
         for name, fn in checks:
             try:
                 changed |= fn(state)

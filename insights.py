@@ -20,6 +20,10 @@ from datetime import datetime, timezone
 
 import extras
 import impact
+try:
+    import learn
+except ImportError:  # phone copy without learn.py
+    learn = None
 
 log = logging.getLogger("bot")
 
@@ -171,7 +175,7 @@ def ai_views(rows, slot_label):
     kwargs = dict(
         model=impact.AI_MODEL,
         max_tokens=6000,
-        system=SYSTEM,
+        system=SYSTEM + (learn.guidance("outlook") if learn else ""),
         messages=[{"role": "user", "content": f"Time: {slot_label} New York.\nData:\n"
                    + json.dumps(rows, ensure_ascii=False)}],
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
@@ -289,6 +293,7 @@ class HourlyInsights:
                 by_ai = True
             except Exception as e:
                 log.warning("Hourly outlook AI failed (%s); using rules", type(e).__name__)
+        ai_tickers = {t for t in feats if t in views and views[t][0] in ("up", "down", "neutral")}
         for t, f in feats.items():
             if t not in views or views[t][0] not in ("up", "down", "neutral"):
                 views[t] = rule_view(f, per_news[t])
@@ -314,4 +319,7 @@ class HourlyInsights:
         lines.append(f"<i>Automated guess from price, volume and news{' 🤖' if by_ai else ''} — not financial advice.</i>")
         if self.send("\n".join(lines)):
             extras.bump(state, "outlook")
+            if learn:
+                for t in feats:
+                    learn.record_outlook(state, t, views[t], feats[t]["price"], by_ai and t in ai_tickers)
             log.info("Hourly outlook sent (%d up, %d down, %d neutral)", len(ups), len(downs), len(flat))
