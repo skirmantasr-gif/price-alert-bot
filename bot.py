@@ -59,6 +59,7 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 CONTRACTS_CHAT_ID = os.environ.get("CONTRACTS_CHAT_ID", "").strip() or CHAT_ID
 BUYOUT_CHAT_ID = os.environ.get("BUYOUT_CHAT_ID", "").strip()  # buyout watch is off without its own channel
+PAPER_CHAT_ID = os.environ.get("PAPER_CHAT_ID", "").strip()    # 🧪 practice portfolio channel (else: main, report only)
 CONTRACT_SCAN_SECONDS = int(os.environ.get("CONTRACT_SCAN_SECONDS", "60"))  # one market per scan
 TICKERS = watchlist.TICKERS
 THRESHOLDS = watchlist.THRESHOLDS  # ticker -> fraction, e.g. 0.02
@@ -542,7 +543,8 @@ def main():
         if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
             extra += "\nLearning 🎓: ON (guesses checked against real prices, review every 2 days)"
             if learn.paper and learn.paper.Tracker.enabled():
-                extra += "\nPractice portfolio 🧪: ON (pretend €100 per strategy, daily report after the close)"
+                extra += ("\nPractice portfolio 🧪: ON (pretend €100 per strategy" +
+                          (", every trade + daily report → separate channel)" if PAPER_CHAT_ID else ", daily report here)"))
         if HEARTBEAT_ROLE != "phone" and contracts.ON:
             extra += ("\nContract scan 🏛️: " + (contracts.ContractScanner.label()
                       + (" → separate channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
@@ -577,7 +579,8 @@ def main():
         reviewer = learn.Reviewer(http_get_json, send_telegram)
     practice = None
     if reviewer and learn.paper and learn.paper.Tracker.enabled():
-        practice = learn.paper.Tracker(http_get_json, send_telegram)
+        practice = learn.paper.Tracker(http_get_json, lambda text, silent=True: send_telegram(text, silent, PAPER_CHAT_ID or None),
+                                       live_trades=bool(PAPER_CHAT_ID))
         practice.attach(state)  # before any alert is sent, so the first calls are traded too
     started = time.time()
     while True:

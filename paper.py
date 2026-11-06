@@ -15,7 +15,9 @@ Rules (same for all):
   between EUR and the stock's currency are ignored (returns are the stock's own % move)
 
 Signals come from learn.record() (every up/down call the bot sends, with the price at that moment).
-Daily quiet 🧪 report after the New York close on weekdays. State: `_paper` in the encrypted state.
+Own channel (PAPER_CHAT_ID): a quiet message for every pretend trade + the daily report; without it only the
+daily report goes to the main channel. Daily quiet 🧪 report after the New York close on weekdays.
+State: `_paper` in the encrypted state.
 Simulation only — not advice; real fills, spreads and pre/after-hours prices can differ.
 """
 
@@ -178,10 +180,32 @@ def record(sig):
         log.warning("Practice portfolio signal failed: %s", type(e).__name__)
 
 
+def trade_lines(st, since):
+    """New trades after `since`, merged across portfolios: [(t, text)]."""
+    trades = {}
+    for key, (name, _) in PORTFOLIOS.items():
+        for e in st["pf"][key]["log"]:
+            if e["t"] > since:
+                k = (e["t"] // 60, e["a"], e["tk"], round(e.get("ret", 0), 3))
+                trades.setdefault(k, [e, []])[1].append(name)
+    out = []
+    for k in sorted(trades):
+        e, names = trades[k]
+        who = " · ".join(names)
+        if e["a"] == "buy":
+            out.append((e["t"], f"🧪🟢 Pretend BUY <b>${html.escape(e['tk'])}</b> €{SIZE_EUR:.0f} at {e['p']:,.4g}\n"
+                                f"Why: {SRC.get(e['src'], e['src'])} — {CONF.get(e['c'], e['c'])}\nIn: {who}"))
+        else:
+            out.append((e["t"], f"🧪{'✅' if e['ret'] > 0 else '❌'} Pretend SELL <b>${html.escape(e['tk'])}</b> "
+                                f"{e['ret'] * 100:+.1f}%\nWhy: {html.escape(e['why'])}\nIn: {who}"))
+    return out
+
+
 class Tracker:
-    def __init__(self, get_json, send):
+    def __init__(self, get_json, send, live_trades=False):
         self.get_json = get_json
         self.send = send
+        self.live_trades = live_trades  # own channel: post every trade as it happens
         self.last = 0.0
         self.cache = {}
 
@@ -221,6 +245,15 @@ class Tracker:
             self.last = now
             step(st, now, self.price)
             changed = True
+        if self.live_trades:
+            new = trade_lines(st, st.get("posted", st["since"]))
+            for t, text in new[:10]:
+                if not self.send(text, True):
+                    break
+                st["posted"] = t
+                changed = True
+            if len(new) > 10:
+                st["posted"] = new[-1][0]  # flood guard: the daily report lists the rest
         et = _ny(now)
         day = et.strftime("%Y-%m-%d")
         if et.weekday() < 5 and et.strftime("%H:%M") >= REPORT_NY and st.get("rep") != day:
