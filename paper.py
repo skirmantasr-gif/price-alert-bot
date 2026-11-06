@@ -27,9 +27,10 @@ Report numbers: value vs the S&P 500, and per portfolio (once trades are closed)
 profit factor (gains ÷ losses), max drawdown, and a warning while there are fewer than 30 closed trades.
 
 Signals come from learn.record() (every up/down call the bot sends, with the price at that moment).
-Own channel (PAPER_CHAT_ID): a message right after the US open (~09:36 New York, the opening fills) and then
-one per hour while the market is open (10:00…16:00 New York, with sound) listing the pretend trades of that hour — sent only when something was bought or sold; trades made
-outside market hours go into the next session's first hourly message. Plus the daily report. Without the
+Own channel (PAPER_CHAT_ID): a broker-style account statement right after the US open (~09:36 New York) and
+every market hour (10:00…16:00 New York): per portfolio the total value, free cash, money reserved for waiting
+orders, money in stocks, and each holding (value, profit/loss, buy price → now, day N of 3), plus the trades
+since the last statement. With sound only when something was bought or sold, otherwise silent. Plus the daily report. Without the
 channel only the daily report goes to the main channel. Daily quiet 🧪 report after the New York close on weekdays.
 State: `_paper` in the encrypted state.
 Simulation only — not advice; real fills, spreads and pre/after-hours prices can differ.
@@ -333,6 +334,40 @@ def report(st, now, data, title):
     return "\n".join(lines)
 
 
+def _held_days(data, tk, pos, now):
+    d = data(tk) or {}
+    return len({b[3] for b in d.get("bars", []) if pos["t"] < b[0] <= now and b[3] != pos["day"]})
+
+
+def account(st, key, now, data):
+    """Broker-style view of one portfolio: total value, cash, money in stocks, each holding."""
+    name = PORTFOLIOS[key][0]
+    pf = st["pf"][key]
+    cash = pf["cash"]
+    reserved = SIZE_EUR * len(pf.get("pending", {}))
+    rows, stock_val = [], 0.0
+    for tk, pos in sorted(pf["open"].items(), key=lambda x: x[1]["t"]):
+        p = _last(data, tk, now) or pos["p0"]
+        mv = pos["eur"] * p / pos["p0"]
+        stock_val += mv
+        pl = mv - SIZE_EUR
+        note = " · selling at the next price" if "exit" in pos else ""
+        rows.append(f"   • <b>${html.escape(tk)}</b> €{mv:.2f} ({pl:+.2f}, {(p / pos['p0'] - 1) * 100:+.1f}%) · "
+                    f"bought {pos['p0']:,.4g} → now {p:,.4g} · day {_held_days(data, tk, pos, now)}/{HOLD_DAYS}{note}")
+    for tk in sorted(pf.get("pending", {})):
+        rows.append(f"   • ⏳ <b>${html.escape(tk)}</b> €{SIZE_EUR:.0f} buy order waiting for the market price")
+    total = cash + reserved + stock_val
+    realized = sum(c["eur"] for c in pf["closed"])
+    invested = SIZE_EUR * len(pf["open"])
+    head = (f"{name}: <b>€{total:.2f}</b> ({(total / START_EUR - 1) * 100:+.1f}%)\n"
+            f"   💵 Free cash €{cash:.2f}" + (f" · ⏳ reserved €{reserved:.0f}" if reserved else "")
+            + (f" · 📈 in stocks €{stock_val:.2f}" if pf["open"] else "") + (f" (invested €{invested:.0f}, {stock_val - invested:+.2f})" if invested else "")
+            + (f"\n   ✔️ Closed trades: {len(pf['closed'])}, profit {realized:+.2f} €" if pf["closed"] else ""))
+    if not rows:
+        return head + "\n   <i>no positions — all in cash</i>"
+    return head + "\n" + "\n".join(rows)
+
+
 # ---------------------------------------------------------------- live tracker
 _state_ref = None
 
@@ -399,17 +434,25 @@ class Tracker:
         return d
 
     def _post(self, st, now, label):
-        """One message with every trade since the last one (nothing is sent when nothing happened)."""
+        """Hourly account statement (every market hour); with sound only when something was bought or sold."""
         new = trade_lines(st, st.get("posted", st["since"]), short=False)
-        if not new:
-            return
-        head = (f"🧪 <b>Practice portfolio · {label}</b> — "
-                f"{len(new)} update{'s' if len(new) > 1 else ''} since the last message")
-        body = [x for _, x in new[:15]] + ([f"… and {len(new) - 15} more"] if len(new) > 15 else [])
-        vals = " · ".join(f"{name.split()[0]} €{value(st['pf'][k], now, self.data):.2f}"
-                          for k, (name, _) in PORTFOLIOS.items())
-        if self.send(head + "\n\n" + "\n".join(body) + "\n\nNow: " + vals, False):
-            st["posted"] = new[-1][0]
+        parts = [f"🧪 <b>Practice account · {label}</b>"]
+        for key in PORTFOLIOS:
+            parts.append(account(st, key, now, self.data))
+        bv = _bench(st, now, self.data)
+        if bv:
+            parts.append(f"📊 Same €100 in the S&P 500: <b>€{bv:.2f}</b> ({(bv / START_EUR - 1) * 100:+.1f}%) — the number to beat")
+        if new:
+            tl = [x for _, x in new[:10]] + ([f"… and {len(new) - 10} more"] if len(new) > 10 else [])
+            parts.append("<b>Trades since the last update:</b>\n" + "\n".join(tl))
+        else:
+            parts.append("<i>No trades this hour.</i>")
+        text = "\n\n".join(parts)
+        if len(text) > 4000:
+            text = text[:3990].rsplit("\n", 1)[0] + "\n…"
+        if self.send(text, not new):
+            if new:
+                st["posted"] = new[-1][0]
 
     def check(self, state):
         self.attach(state)
