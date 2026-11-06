@@ -16,8 +16,15 @@ Rules (same for all):
   sell after 3 trading days at that day's closing price (a market-on-close order), at -8% (stop) or +15%
   (take profit) judged on regular-session prices only and sold at the next price, or when a DOWN call
   (medium+) comes (next available price; a waiting buy order is cancelled instead)
+  spread / slippage: a real buy pays the ask and a sell gets the bid, so every fill is moved against us by an
+  estimated half-spread from the stock's price and trading volume (US: 0.05% very liquid … 1% penny / illiquid;
+  other currencies 0.3%)
   fee 0.15% on every buy and sell (typical currency-exchange cost at Trading 212 / Revolut); currency moves
   between EUR and the stock's currency are ignored (returns are the stock's own % move)
+
+Report numbers: value vs the S&P 500, and per portfolio (once trades are closed) win rate, average trade,
+"vs S&P" = each trade's return minus the S&P 500's return over the same days (did the alert beat the market?),
+profit factor (gains ÷ losses), max drawdown, and a warning while there are fewer than 30 closed trades.
 
 Signals come from learn.record() (every up/down call the bot sends, with the price at that moment).
 Own channel (PAPER_CHAT_ID): while the US market is open, one message per hour (10:00…16:00 New York, with
@@ -88,6 +95,26 @@ def _log(pf, now, **e):
     pf["log"] = pf["log"][-80:]
 
 
+def slip(d, price):
+    """Estimated half-spread + slippage for one fill (fraction of the price)."""
+    if (d or {}).get("cur", "USD") != "USD":
+        return 0.003
+    dv = (d or {}).get("dollar_vol") or 0
+    if price < 1 or dv < 1e6:
+        return 0.01
+    if price < 5 or dv < 10e6:
+        return 0.004
+    if dv < 100e6:
+        return 0.0015
+    return 0.0005
+
+
+def _price_at(data, tk, ts):
+    d = data(tk) or {}
+    bars = [b for b in d.get("bars", []) if b[0] <= ts]
+    return bars[-1][2] if bars else None
+
+
 def _first_bar(bars, t):
     for b in bars:
         if b[0] >= t:
@@ -95,13 +122,20 @@ def _first_bar(bars, t):
     return None
 
 
-def _sell(pf, tk, price, at, now, why):
+def _sell(pf, tk, price, at, now, why, data=None):
     pos = pf["open"].pop(tk)
+    if data:
+        price *= 1 - slip(data(tk), price)
     ret = price / pos["p0"] - 1
+    vs = None
+    if data and tk != BENCH:
+        b0, b1 = _price_at(data, BENCH, pos["t"]), _price_at(data, BENCH, at)
+        if b0 and b1:
+            vs = round(ret - (b1 / b0 - 1), 4)
     eur = pos["eur"] * (1 + ret) * (1 - FEE)
     pf["cash"] += eur
     pf["closed"].append({"tk": tk, "ret": round(ret, 4), "eur": round(eur - SIZE_EUR, 3), "t0": pos["t"],
-                         "t": int(at), "why": why, "src": pos["src"]})
+                         "t": int(at), "why": why, "src": pos["src"], "vs": vs})
     pf["closed"] = pf["closed"][-300:]
     _log(pf, now, a="sell", tk=tk, ret=round(ret, 4), why=why, p=price, at=int(at))
 
@@ -137,9 +171,10 @@ def step(st, now, data):
             b = _first_bar(bars, o["t"])
             if b:
                 pf["pending"].pop(tk)
-                pf["open"][tk] = {"p0": b[1], "eur": SIZE_EUR * (1 - FEE), "t": int(b[0]), "day": b[3],
+                fill = b[1] * (1 + slip(d, b[1]))
+                pf["open"][tk] = {"p0": fill, "eur": SIZE_EUR * (1 - FEE), "t": int(b[0]), "day": b[3],
                                   "src": o["src"], "c": o["c"]}
-                _log(pf, now, a="buy", tk=tk, p=b[1], at=int(b[0]), src=o["src"], c=o["c"],
+                _log(pf, now, a="buy", tk=tk, p=fill, at=int(b[0]), src=o["src"], c=o["c"],
                      late=b[0] - o["t"] > 900)
             elif now - o["t"] > 7 * 86400:
                 pf["pending"].pop(tk)
@@ -153,7 +188,7 @@ def step(st, now, data):
             if "exit" in pos:  # decided earlier (DOWN call / stop / target): next available price
                 b = _first_bar(bars, pos["exit"]["t"])
                 if b:
-                    _sell(pf, tk, b[1], b[0], now, pos["exit"]["why"])
+                    _sell(pf, tk, b[1], b[0], now, pos["exit"]["why"], data)
                 continue
             days, done = [], False
             for i, b in enumerate(bars):
@@ -164,7 +199,7 @@ def step(st, now, data):
                     why = "stop −8%" if ret <= STOP else "take profit +15%"
                     nxt = bars[i + 1] if i + 1 < len(bars) else None
                     if nxt:
-                        _sell(pf, tk, nxt[1], nxt[0], now, why)
+                        _sell(pf, tk, nxt[1], nxt[0], now, why, data)
                     else:
                         pos["exit"] = {"t": int(b[0]) + 1, "why": why}
                     done = True
@@ -178,7 +213,7 @@ def step(st, now, data):
                     else:
                         last_of_day = now - b[0] >= 1200
                 if len(days) >= HOLD_DAYS and last_of_day:
-                    _sell(pf, tk, b[2], b[0] + 300, now, f"{HOLD_DAYS} days held (sold at the close)")
+                    _sell(pf, tk, b[2], b[0] + 300, now, f"{HOLD_DAYS} days held (sold at the close)", data)
                     done = True
                     break
 
@@ -242,6 +277,36 @@ def trade_lines(st, since, short=True):
             if not (e["a"] == "order" and e["tk"] in filled)]  # order already filled/cancelled: show only that
 
 
+def stats(pf):
+    c = pf["closed"]
+    if not c:
+        return ""
+    wins = [x["ret"] for x in c if x["ret"] > 0]
+    loss = [x["ret"] for x in c if x["ret"] <= 0]
+    pfac = sum(wins) / -sum(loss) if loss and sum(loss) < 0 else None
+    vs = [x["vs"] for x in c if x.get("vs") is not None]
+    eq = pf.get("eq") or []
+    mdd, peak = 0.0, START_EUR
+    for v in eq:
+        peak = max(peak, v)
+        mdd = min(mdd, v / peak - 1)
+    out = (f"   {len(wins)}/{len(c)} won · avg trade {sum(x['ret'] for x in c) / len(c) * 100:+.1f}%"
+           + (f" · vs S&P {sum(vs) / len(vs) * 100:+.1f}%/trade" if vs else "")
+           + (f" · profit factor {pfac:.2f}" if pfac is not None else "")
+           + (f" · max drawdown {mdd * 100:.1f}%" if eq else ""))
+    if len(c) < 30:
+        out += f" · <i>only {len(c)} closed trades — too early to judge (30+ needed)</i>"
+    return out
+
+
+def snapshot(st, now, data):
+    """Equity history for max drawdown (one point per hourly check / report)."""
+    for pf in st["pf"].values():
+        eq = pf.setdefault("eq", [])
+        eq.append(round(value(pf, now, data), 3))
+        del eq[:-1000]
+
+
 def report(st, now, data, title):
     d0 = _ny(st["since"]).strftime("%b %d")
     lines = [f"🧪 <b>{html.escape(title)}</b>", f"<i>Pretend €100 each, started {d0}. Simulation, not advice.</i>"]
@@ -253,6 +318,8 @@ def report(st, now, data, title):
         lines.append(f"{name}: <b>€{v:.2f}</b> ({(v / START_EUR - 1) * 100:+.1f}%) · {len(pf['open'])} open"
                      + (f" · {wait} waiting for the open" if wait else "") + f" · {len(pf['closed'])} closed"
                      + (f" ({won} won)" if pf["closed"] else ""))
+        if stats(pf):
+            lines.append(stats(pf))
     bv = _bench(st, now, data)
     if bv:
         lines.append(f"📊 S&P 500 (SPY): €{bv:.2f} ({(bv / START_EUR - 1) * 100:+.1f}%) — the number to beat")
@@ -261,7 +328,7 @@ def report(st, now, data, title):
         lines.append("<b>Last 24h:</b>")
         lines += [x for _, x in tl[:30]] + ([f"… and {len(tl) - 30} more"] if len(tl) > 30 else [])
     lines.append(f"<i>Rules: €{SIZE_EUR:.0f} per UP call, max {MAX_OPEN} open; orders fill only at real market prices "
-                 f"(outside market hours: the next opening price); sell after {HOLD_DAYS} trading days at the close, "
+                 f"(outside market hours: the next opening price) minus an estimated spread; sell after {HOLD_DAYS} trading days at the close, "
                  f"at −8% / +15%, or on a DOWN call; 0.15% fee each way; currency moves ignored.</i>")
     return "\n".join(lines)
 
@@ -288,10 +355,17 @@ def parse_chart(r):
     q = (r.get("indicators") or {}).get("quote", [{}])[0]
     bars = [(t, o, c, datetime.fromtimestamp(t, tz).strftime("%Y-%m-%d"))
             for t, o, c in zip(r.get("timestamp") or [], q.get("open") or [], q.get("close") or []) if o and c]
+    vol = {}
+    for t, c, v in zip(r.get("timestamp") or [], q.get("close") or [], q.get("volume") or []):
+        if c and v:
+            day = datetime.fromtimestamp(t, tz).strftime("%Y-%m-%d")
+            vol[day] = vol.get(day, 0) + c * v
+    days = sorted(vol)[:-1] or sorted(vol)  # full days only (today is partial)
     reg = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
     now = time.time()
     open_end = reg.get("end") if reg.get("start", 0) <= now < reg.get("end", 0) else None
-    return {"bars": bars, "open_end": open_end, "live": True}
+    return {"bars": bars, "open_end": open_end, "live": True, "cur": meta.get("currency") or "USD",
+            "dollar_vol": sum(vol[d] for d in days) / len(days) if days else 0}
 
 
 class Tracker:
@@ -341,6 +415,7 @@ class Tracker:
                 st["hour_slot"] = slot
                 changed = True
                 step(st, now, self.data)
+                snapshot(st, now, self.data)
                 new = trade_lines(st, st.get("posted", st["since"]), short=False)
                 if new:
                     head = (f"🧪 <b>Practice portfolio · {et.strftime('%H:00')} New York</b> — "
@@ -354,6 +429,7 @@ class Tracker:
         if et.weekday() < 5 and et.strftime("%H:%M") >= REPORT_NY and st.get("rep") != day:
             st["rep"] = day
             step(st, now, self.data)
+            snapshot(st, now, self.data)
             self.send(report(st, now, self.data, f"Practice portfolio · {et.strftime('%a %b %d')}"), True)
             changed = True
         return changed
