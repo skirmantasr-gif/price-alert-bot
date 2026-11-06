@@ -1,0 +1,32 @@
+name: Tests
+
+# Runs the automatic tests (tests/, no internet, no secrets) on every code upload. GitHub emails the owner if they
+# fail. Independent of the bot: a failing test never stops the running bot. State saves ("[skip ci]") are skipped.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["state.enc", "**.md"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -t . -v
