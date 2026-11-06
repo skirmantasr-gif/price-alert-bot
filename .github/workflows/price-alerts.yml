@@ -52,6 +52,8 @@ jobs:
           WATCHLIST: ${{ secrets.WATCHLIST }}                # stocks, per-stock % steps, news settings (JSON, see watchlist.py)
           CONTRACTS: "true"                                  # contract wins by any small/mid cap, 15 markets (contracts.py)
           CONTRACTS_CHAT_ID: ${{ secrets.CONTRACTS_CHAT_ID }}  # optional separate channel; same channel if unset
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}               # Alpaca paper keys: Benzinga real-time news; off if unset
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           BUYOUT: ${{ secrets.BUYOUT }}                      # buyout watch: universe / exclusions / notes (JSON, see buyout.py)
           BUYOUT_CHAT_ID: ${{ secrets.BUYOUT_CHAT_ID }}      # separate channel for 🎯 buyout watch
           PAPER_CHAT_ID: ${{ secrets.PAPER_CHAT_ID }}        # separate channel for the 🧪 practice portfolio (optional)
