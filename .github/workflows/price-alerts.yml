@@ -54,6 +54,7 @@ jobs:
           CONTRACTS_CHAT_ID: ${{ secrets.CONTRACTS_CHAT_ID }}  # optional separate channel; same channel if unset
           BUYOUT: ${{ secrets.BUYOUT }}                      # buyout watch: universe / exclusions / notes (JSON, see buyout.py)
           BUYOUT_CHAT_ID: ${{ secrets.BUYOUT_CHAT_ID }}      # separate channel for 🎯 buyout watch
+          PAPER_CHAT_ID: ${{ secrets.PAPER_CHAT_ID }}        # separate channel for the 🧪 practice portfolio (optional)
           BUYOUT_REPORT_TIME: "17:00"                        # daily scan + table, local time (watchlist timezone)
           HEARTBEAT_ROLE: github                             # watchdog: GitHub and the phone check on each other
           POLL_SECONDS: "60"
