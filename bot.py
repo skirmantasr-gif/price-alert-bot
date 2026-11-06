@@ -541,6 +541,8 @@ def main():
                                               else "OFF (" + (buyout.ERROR or "BUYOUT or BUYOUT_CHAT_ID secret not set") + ")")
         if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
             extra += "\nLearning 🎓: ON (guesses checked against real prices, review every 2 days)"
+            if learn.paper and learn.paper.Tracker.enabled():
+                extra += "\nPractice portfolio 🧪: ON (pretend €100 per strategy, daily report after the close)"
         if HEARTBEAT_ROLE != "phone" and contracts.ON:
             extra += ("\nContract scan 🏛️: " + (contracts.ContractScanner.label()
                       + (" → separate channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
@@ -573,6 +575,10 @@ def main():
         learn.CHARTS = LAST_CHART
         learn.Reviewer.attach(state)
         reviewer = learn.Reviewer(http_get_json, send_telegram)
+    practice = None
+    if reviewer and learn.paper and learn.paper.Tracker.enabled():
+        practice = learn.paper.Tracker(http_get_json, send_telegram)
+        practice.attach(state)  # before any alert is sent, so the first calls are traded too
     started = time.time()
     while True:
         battery.check()
@@ -586,6 +592,8 @@ def main():
             checks.append(("Hourly outlook", outlook.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
+        if practice:
+            checks.append(("Practice portfolio", practice.check))
         for name, fn in checks:
             try:
                 changed |= fn(state)

@@ -24,6 +24,11 @@ import re
 import time
 from datetime import datetime
 
+try:
+    import paper  # 🧪 practice portfolio trades these calls
+except ImportError:
+    paper = None
+
 log = logging.getLogger("bot")
 
 ON = os.environ.get("LEARN", "true").lower() == "true"
@@ -76,6 +81,8 @@ def record(state, src, ticker, direction, conf, by, text="", price=None):
     lst = _st(state).setdefault("p", [])
     lst.append({"t": int(time.time()), "tk": ticker, "src": src, "by": by, "d": direction, "c": conf,
                 "p0": round(float(p0), 4), "x": _clean(text, 110)})
+    if paper:
+        paper.record(lst[-1])
     cut = time.time() - KEEP_DAYS * 86400
     lst[:] = [p for p in lst if p["t"] >= cut][-MAX_PRED:]
 
