@@ -27,8 +27,8 @@ Report numbers: value vs the S&P 500, and per portfolio (once trades are closed)
 profit factor (gains ÷ losses), max drawdown, and a warning while there are fewer than 30 closed trades.
 
 Signals come from learn.record() (every up/down call the bot sends, with the price at that moment).
-Own channel (PAPER_CHAT_ID): while the US market is open, one message per hour (10:00…16:00 New York, with
-sound) listing the pretend trades of that hour — sent only when something was bought or sold; trades made
+Own channel (PAPER_CHAT_ID): a message right after the US open (~09:36 New York, the opening fills) and then
+one per hour while the market is open (10:00…16:00 New York, with sound) listing the pretend trades of that hour — sent only when something was bought or sold; trades made
 outside market hours go into the next session's first hourly message. Plus the daily report. Without the
 channel only the daily report goes to the main channel. Daily quiet 🧪 report after the New York close on weekdays.
 State: `_paper` in the encrypted state.
@@ -398,6 +398,19 @@ class Tracker:
         self.cache[tk] = (time.time(), d)
         return d
 
+    def _post(self, st, now, label):
+        """One message with every trade since the last one (nothing is sent when nothing happened)."""
+        new = trade_lines(st, st.get("posted", st["since"]), short=False)
+        if not new:
+            return
+        head = (f"🧪 <b>Practice portfolio · {label}</b> — "
+                f"{len(new)} update{'s' if len(new) > 1 else ''} since the last message")
+        body = [x for _, x in new[:15]] + ([f"… and {len(new) - 15} more"] if len(new) > 15 else [])
+        vals = " · ".join(f"{name.split()[0]} €{value(st['pf'][k], now, self.data):.2f}"
+                          for k, (name, _) in PORTFOLIOS.items())
+        if self.send(head + "\n\n" + "\n".join(body) + "\n\nNow: " + vals, False):
+            st["posted"] = new[-1][0]
+
     def check(self, state):
         self.attach(state)
         st = state["_paper"]
@@ -409,22 +422,19 @@ class Tracker:
             step(st, now, self.data)
             changed = True
         et = _ny(now)
-        if self.live_trades and et.weekday() < 5 and 10 <= et.hour <= 16:
-            slot = et.strftime("%Y-%m-%d %H")
-            if st.get("hour_slot") != slot:
+        hm = et.strftime("%H:%M")
+        if self.live_trades and et.weekday() < 5:
+            slot = None
+            if "09:36" <= hm < "10:00":
+                slot, label = et.strftime("%Y-%m-%d open"), "market open (09:30 New York)"
+            elif 10 <= et.hour <= 16:
+                slot, label = et.strftime("%Y-%m-%d %H"), f"{et.strftime('%H:00')} New York"
+            if slot and st.get("hour_slot") != slot:
                 st["hour_slot"] = slot
                 changed = True
                 step(st, now, self.data)
                 snapshot(st, now, self.data)
-                new = trade_lines(st, st.get("posted", st["since"]), short=False)
-                if new:
-                    head = (f"🧪 <b>Practice portfolio · {et.strftime('%H:00')} New York</b> — "
-                            f"{len(new)} update{'s' if len(new) > 1 else ''} since the last message")
-                    body = [x for _, x in new[:15]] + ([f"… and {len(new) - 15} more"] if len(new) > 15 else [])
-                    vals = " · ".join(f"{name.split()[0]} €{value(st['pf'][k], now, self.data):.2f}"
-                                      for k, (name, _) in PORTFOLIOS.items())
-                    if self.send(head + "\n\n" + "\n".join(body) + "\n\nNow: " + vals, False):
-                        st["posted"] = new[-1][0]
+                self._post(st, now, label)
         day = et.strftime("%Y-%m-%d")
         if et.weekday() < 5 and et.strftime("%H:%M") >= REPORT_NY and st.get("rep") != day:
             st["rep"] = day
