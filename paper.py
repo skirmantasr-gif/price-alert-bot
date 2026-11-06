@@ -68,8 +68,11 @@ CONF = {"high": "Expected UP", "medium": "Likely UP", "low": "Possibly UP"}
 #                                     "open_end": end of the session in progress (or None)}
 # Orders never fill at an alert's own price: they fill at the first regular-session bar that starts at or after
 # the decision (its open) — outside market hours that is the next session's opening price.
+VERSION = 2  # 2 = real-price fills; older saved portfolios (filled at alert prices) are restarted once
+
+
 def new_state(now):
-    return {"since": int(now), "pf": {k: _pf() for k in PORTFOLIOS}}
+    return {"v": VERSION, "since": int(now), "pf": {k: _pf() for k in PORTFOLIOS}}
 
 
 def _pf():
@@ -305,7 +308,7 @@ class Tracker:
 
     def attach(self, state):
         global _state_ref
-        if "_paper" not in state:
+        if state.get("_paper", {}).get("v") != VERSION:
             state["_paper"] = new_state(time.time())
         _state_ref = state["_paper"]
 
