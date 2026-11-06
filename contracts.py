@@ -111,7 +111,9 @@ CEILING_RE = re.compile(r"(\bIDIQ\b|indefinite[- ]delivery|\bceiling\b|\bup to\b
                         r"blanket purchase|\bBPA\b|multiple[- ]award|framework|rate contract|"
                         r"Rahmenvertrag|accord[- ]cadre|raamovereenkomst|ramavtal|共同供應契約|共契|框架|入围|入圍|"
                         r"单价合同|上限金額|上限额)", re.I)
-OLD_NEWS_HOURS = 18   # older headlines never get 🚨 (the price has usually reacted already)
+OLD_NEWS_HOURS = 12   # older news (first report anywhere) never gets 🚨 (the price has usually reacted already)
+MILITARY_RE = re.compile(r"(army|navy|air force|marine|space force|defen[cs]e|department of war|pentagon|\bDLA\b|"
+                         r"\bDoD\b|missile|special operations|socom|darpa|corps of engineers)", re.I)
 VERIFY_RATIO = 0.0    # every candidate is double-checked with a second news search first (~10 a day)
 
 # How to find a stock on the owner's platforms (IBKR, Trading 212, Revolut). Availability is the usual situation
@@ -311,6 +313,12 @@ class Yahoo:
     def price(self, sym):
         j = json.loads(_get(f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?interval=1d&range=5d"))
         return float(j["chart"]["result"][0]["meta"]["regularMarketPrice"])
+
+    def traded_since(self, sym, t, minutes=30):
+        """True if the stock's regular session has been open for `minutes`+ since time t (epoch seconds)."""
+        j = json.loads(_get(f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?interval=5m&range=5d"))
+        ts = j["chart"]["result"][0].get("timestamp") or []
+        return any(x >= t + minutes * 60 for x in ts)
 
     def market_cap_usd(self, sym):
         hit = self.cap.get(sym)
@@ -630,12 +638,24 @@ class ContractScanner:
                 usd = usd2
             ratio = usd / cap
             big = ratio >= (BIG_NEW if r["kind"] == "new" else BIG_OTHER)
-        age_h = (datetime.now(timezone.utc) - it["date"]).total_seconds() / 3600 if it.get("date") else None
-        if big and age_h is not None and age_h > OLD_NEWS_HOURS:
-            big = False
+        now = datetime.now(timezone.utc)
+        age_h = (now - it["date"]).total_seconds() / 3600 if it.get("date") else None
+        first, first_src = self.first_seen(it, r, name)
+        first_h = (now - first).total_seconds() / 3600 if first else None
+        if first_h is not None and age_h is not None and first_h - age_h < 1:
+            first_h, first_src = None, ""  # nothing meaningfully earlier
+        oldest = max(x for x in (age_h, first_h, 0) if x is not None)
+        traded = False
+        if first or it.get("date"):
+            try:
+                traded = self.yahoo.traded_since(sym, (first or it["date"]).timestamp())
+            except Exception:
+                traded = False
+        if big and (oldest > OLD_NEWS_HOURS or traded):
+            big = False  # the market has already had the chance to react
         if big and not tradable(sym):
             big = False  # can't be bought on the owner's platforms: inform quietly
-        it = {**it, "age_h": age_h}
+        it = {**it, "age_h": age_h, "first_h": first_h, "first_src": first_src, "traded": traded}
         text = self.format(it, r, sym, name, usd, cap, ratio, big)
         if self.send(text, not big):
             sent.append([sym, round(usd / 1e6, 2), today])
@@ -648,6 +668,42 @@ class ContractScanner:
                     log.warning("Contract learning record failed: %s", type(e).__name__)
             return True
         return False
+
+    def first_seen(self, it, r, name):
+        """Earliest date this award was reported: other coverage of the same company + amount in the last 3 days,
+        and for US military buyers the Pentagon's daily contract list naming the company (a republished article
+        often shows today's date for news that came out the day before). Returns (datetime, source) or (None, "")."""
+        market = next((m for m in MARKETS if m[0] == it["market"]), MARKETS[0])
+        label, hl, gl, ceid, _ = market
+        nw = _name_words(r.get("company") or name) or _name_words(name)
+        word = " ".join(nw[:1] if nw and len(nw[0]) >= 5 else nw[:2]) or name
+        a = r["amount"]
+        num = f"{a / 1e9:.3g}" if a >= 1e9 else f"{a / 1e6:.3g}" if a >= 1e6 else f"{a:,.0f}"
+        first, src = it.get("date"), ""
+        queries = [(f'"{word}" {num} when:3d', "amount")]
+        if label == "US" and MILITARY_RE.search(r.get("buyer") or ""):
+            queries.append((f'"{word}" site:war.gov when:3d', "dod"))
+        for q, how in queries:
+            try:
+                url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({"q": q, "hl": hl, "gl": gl, "ceid": ceid})
+                for x in ET.fromstring(_get(url)).iter("item"):
+                    t = html.unescape((x.findtext("title") or "").strip())
+                    if how == "dod" and not t.lower().startswith("contracts for"):
+                        continue
+                    if how == "amount" and not (CONTRACT_WORD.search(t) or num in t
+                                                or set(_name_words(name)[:1]) & set(_name_words(t))):
+                        continue
+                    try:
+                        d = parsedate_to_datetime(x.findtext("pubDate") or "")
+                    except Exception:
+                        continue
+                    if first is None or d < first:
+                        first = d
+                        src = ("the Pentagon's daily contract list" if how == "dod"
+                               else html.escape(t.rsplit(" - ", 1)[-1][:60]))
+            except Exception as e:
+                log.warning("Contract first-seen search failed: %s", type(e).__name__)
+        return first, src
 
     def verify(self, it, r, name):
         """Second look before a loud alert: search the news for more coverage of the same award and let the
@@ -721,8 +777,18 @@ class ContractScanner:
         src = html.escape(it["title"][:160])
         age = it.get("age_h")
         when = ("" if age is None else f" · published {age:.0f}h ago" if age >= 1 else " · published &lt;1h ago")
-        if age is not None and age > OLD_NEWS_HOURS:
-            when += " (older news — the price may already reflect it)"
         lines.append((f'<a href="{html.escape(link)}">{src}</a>' if link else src) + when)
+        fh = it.get("first_h")
+        if fh is not None:
+            if it.get("first_src", "").startswith("the Pentagon"):
+                lines.append(f"⏰ <b>Likely first reported {fh:.0f}h ago</b> — the Pentagon's daily contract list from then "
+                             "names this company; this article is probably a later copy")
+            else:
+                lines.append(f"⏰ <b>First reported {fh:.0f}h ago</b>" + (f" ({it['first_src']})" if it.get("first_src") else "")
+                             + " — this article is a later copy")
+        if it.get("traded"):
+            lines.append("⚠️ The market has been open since it was first reported — the price may already reflect it")
+        elif max(x for x in (age, fh, 0) if x is not None) > OLD_NEWS_HOURS:
+            lines.append("⚠️ Older news — the price may already reflect it")
         lines.append("<i>Automated reading of a headline — check the source. Not financial advice.</i>")
         return "\n".join(lines)
