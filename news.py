@@ -41,6 +41,8 @@ SEC_CONTACT = os.environ.get("SEC_CONTACT", "").strip()
 # Tickers that only get 🚨 headlines (too chatty otherwise). Empty = all headlines.
 IMPORTANT_ONLY = watchlist.IMPORTANT_ONLY
 MAX_AGE_HOURS = 48          # ignore items published longer ago than this
+NEWS_MAX_AGE_HOURS = float(os.environ.get("NEWS_MAX_AGE_HOURS", "12"))  # headlines first seen later than this
+#   after publishing are stale (Google often lists small outlets a day late): remembered, not sent
 SEEN_TTL_DAYS = 10          # forget seen-hashes after this
 MAX_SENDS_PER_POLL = 15     # rest waits for the next poll (keeps price checks responsive)
 
@@ -590,6 +592,8 @@ class NewsWatcher:
         seen = ns.setdefault("seen", {})
         now = datetime.now(timezone.utc)
         cutoff = now.timestamp() - MAX_AGE_HOURS * 3600
+        news_cutoff = now.timestamp() - NEWS_MAX_AGE_HOURS * 3600
+        stale = 0
         today = now.strftime("%Y-%m-%d")
         changed = False
         new = []
@@ -607,13 +611,16 @@ class NewsWatcher:
             return res, silent
 
         def consider(key, item, silent):
-            nonlocal changed
+            nonlocal changed, stale
             if key in seen:
                 return
             seen[key] = today
             changed = True
             d = item.get("date")
             if silent or (d and d.timestamp() < cutoff):
+                return
+            if d and item.get("kind") == "news" and item.get("source") != "FDA.gov" and d.timestamp() < news_cutoff:
+                stale += 1
                 return
             new.append(item)
 
@@ -666,6 +673,8 @@ class NewsWatcher:
         for it in res:
             consider(_hash(it["ticker"] + "|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
 
+        if stale:
+            log.info("News: %d stale headline(s) skipped (published > %.0fh before first seen)", stale, NEWS_MAX_AGE_HOURS)
         # merge same story from several sources (within this batch and vs. recently sent)
         reported = ns.setdefault("contracts", [])  # [ticker, $M, date] of contract wins already sent (public data)
         new.sort(key=lambda x: (x["kind"] == "gov", x.get("date") or now))  # official awards after the news
