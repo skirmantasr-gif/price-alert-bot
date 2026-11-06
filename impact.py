@@ -97,6 +97,8 @@ def rule_sec(it):
         return ("down" if v >= 1_000_000 else "neutral"), "low", f"insider plans to sell {money(v)}"
     if ins and ins.get("type") == "3":
         return "neutral", "low", "new insider registered"
+    if it.get("reorg"):
+        return "neutral", "low", "internal reorganization / redomicile, shares swap 1-for-1 (not a takeover)"
     if re.match(r"^(424B[1-8]|S-1|S-3|F-1|F-3|S-3ASR|FWP)", form):
         return "down", "low", "possible offering (dilution if it's shares)"
     if re.match(r"^(SC 13D|SCHEDULE 13D)", form):

@@ -121,6 +121,65 @@ def _get(url, headers=None, timeout=20):
         return r.read()
 
 
+# Company merging with its OWN new holding company (redomicile / reincorporation, 1-for-1 shares) files the same
+# forms as a real takeover (DEFM14A, 425, S-4, 8-K 1.01). Example: Criteo Nov 2026. Detected from the filing text.
+REORG_FORMS = re.compile(r"^(DEFM14|PREM14|DEFA14A|425|S-4|F-4|424B3|8-K)", re.I)
+REORG_RE = re.compile(r"re-?domicil|redomesticat|re-?incorporat|change (of|in) (its )?(domicile|jurisdiction of "
+                      r"incorporation)|holding company reorgani[sz]ation|internal reorgani[sz]ation", re.I)
+OWN_REORG = re.compile(r"\b(its|our|company[’']s|\w+[’']s)( [\w-]+){0,3} (re-?domicil\w*|re-?incorporat\w*|redomesticat\w*)|"
+                       r"(re-?domiciliation|re-?incorporation|redomestication) of (the|our) company", re.I)
+ONE_FOR_ONE = re.compile(r"one[- ](to|for)[- ]one|1[- ]for[- ]1|1:1 basis|converted into (the right to receive )?one "
+                         r"(share|ordinary share|share of common stock)", re.I)
+CASH_DEAL = re.compile(r"per share in cash|in cash, without interest|cash consideration|premium of|"
+                       r"(?<!issuer )tender offer for|unsolicited (offer|proposal)|(agreed|agrees|will) to be acquired by", re.I)
+_reorg_cache = {}
+
+
+def _sec_text(url, limit):
+    req = urllib.request.Request(url, headers={"User-Agent": f"price-alert-bot {SEC_CONTACT}"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.read(limit).decode("utf-8", "ignore")
+
+
+def sec_reorg(f):
+    """True if a merger-type filing is only a company merging into its OWN new holding company (redomicile /
+    reincorporation, 1-for-1 shares), not a buyout. Example: Criteo, Nov 2026. Signals: (a) the filing's two
+    filers share the family name (Criteo S.A. + Criteo Holdings, Inc.; in a real deal the other filer is the
+    buyer), or (b) the text talks about the company's own redomicile / 1-for-1 swap into its own subsidiary.
+    Never True if the text mentions a cash price, premium or tender offer. Errors → False (normal alert)."""
+    form, items = f.get("form", "").upper(), f.get("items") or []
+    if not REORG_FORMS.match(form) or (form.startswith("8-K") and "1.01" not in items) or not f.get("doc"):
+        return False
+    acc = f.get("acc")
+    if acc in _reorg_cache:
+        return _reorg_cache[acc]
+    try:
+        raw = _sec_text(f["link"], 400_000)
+        text = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", raw)).split())[:150_000]
+        family = False
+        if f.get("cik"):
+            head = _sec_text(f"https://www.sec.gov/Archives/edgar/data/{f['cik']}/{acc.replace('-', '')}/{acc}.txt", 8000)
+            head = head.split("<DOCUMENT>")[0]
+            names = dict(re.findall(r"CENTRAL INDEX KEY:\s*(\d+)", head) and
+                         zip(re.findall(r"CENTRAL INDEX KEY:\s*(\d+)", head),
+                             re.findall(r"COMPANY CONFORMED NAME:\s*(.+)", head)))
+            first = {re.sub(r"[^A-Z0-9]", "", n.split()[0].upper()) for n in names.values() if n.split()}
+            family = len(names) >= 2 and len(first) == 1 and len(next(iter(first))) >= 3 \
+                and next(iter(first)) not in ("THE", "FIRST", "AMERICAN", "UNITED", "NATIONAL", "GLOBAL")
+        own_sub = bool(ONE_FOR_ONE.search(text) and re.search(r"wholly[- ]owned subsidiary", text, re.I)
+                       and re.search(r"with and into", text, re.I))
+        res = not CASH_DEAL.search(text) and (family or bool(OWN_REORG.search(text)) or own_sub
+                                               or bool(REORG_RE.search(text) and ONE_FOR_ONE.search(text)))
+        if form.startswith("8-K") and not re.search(r"\bmerger\b|merge with", text, re.I):
+            res = False  # e.g. a loan amendment that only mentions the redomicile
+    except Exception:
+        return False  # not cached: retried next time
+    _reorg_cache[acc] = res
+    if len(_reorg_cache) > 500:
+        _reorg_cache.pop(next(iter(_reorg_cache)))
+    return res
+
+
 def _norm(title):
     return " ".join(re.sub(r"[^a-z0-9 ]+", " ", title.lower()).split())
 
@@ -606,6 +665,8 @@ class NewsWatcher:
         for it in batch:
             if it["kind"] == "sec" and "insider" not in it:
                 it["insider"] = self._fetch("SEC EDGAR insider", insider_details, it)
+            if it["kind"] == "sec" and "reorg" not in it and SEC_CONTACT:
+                it["reorg"] = sec_reorg(it)
         try:
             impact.assign(batch, {t: (COMPANIES.get(t, {}).get("match") or [t])[0] for t in self.tickers}, self.send)
         except Exception as e:
@@ -690,8 +751,11 @@ class NewsWatcher:
             if form.startswith("424B"):
                 label = f"{form} (prospectus — often an OFFERING)"
             items = [f"{x} {ITEMS_8K[x]}" for x in it["items"] if x in ITEMS_8K and x != "9.01"]
-            imp = bool(IMPORTANT_FORMS.match(form)) or any(x in IMPORTANT_ITEMS for x in it["items"])
+            imp = (bool(IMPORTANT_FORMS.match(form)) or any(x in IMPORTANT_ITEMS for x in it["items"])) and not it.get("reorg")
             lines = [f"{'🚨' if imp else '📄'} <b>${t}</b> SEC filing: <b>{html.escape(label)}</b>"]
+            if it.get("reorg"):
+                lines.append("🏠 Internal reorganization (company merging into its own new holding company, "
+                             "1-for-1 shares) — NOT a buyout")
             if items:
                 lines.append(html.escape("; ".join(items)))
             elif it.get("desc") and not re.fullmatch(r"(FORM\s*)?" + re.escape(form), it["desc"].strip(), re.I) \

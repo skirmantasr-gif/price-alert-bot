@@ -470,6 +470,8 @@ class BuyoutWatch:
             m = SEC_FORM.search(form)
             if not m and not (form.startswith("8-K") and items):
                 continue
+            if news.sec_reorg(f):
+                continue  # company merging into its own new holding company (redomicile) — not a buyout
             if m:
                 key = next((k for k in FORM_NAMES if k in form), m.group(1))
                 what = FORM_NAMES.get(key, form)
