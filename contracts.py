@@ -111,6 +111,8 @@ CEILING_RE = re.compile(r"(\bIDIQ\b|indefinite[- ]delivery|\bceiling\b|\bup to\b
                         r"blanket purchase|\bBPA\b|multiple[- ]award|framework|rate contract|"
                         r"Rahmenvertrag|accord[- ]cadre|raamovereenkomst|ramavtal|共同供應契約|共契|框架|入围|入圍|"
                         r"单价合同|上限金額|上限额)", re.I)
+WIRE_SECONDS = int(os.environ.get("CONTRACT_WIRE_SECONDS", "120"))   # PR Newswire live feed
+US_SECONDS = int(os.environ.get("CONTRACT_US_SECONDS", "300"))       # US Google News search
 OLD_NEWS_HOURS = 12   # older news (first report anywhere) never gets 🚨 (the price has usually reacted already)
 MILITARY_RE = re.compile(r"(army|navy|air force|marine|space force|defen[cs]e|department of war|pentagon|\bDLA\b|"
                          r"\bDoD\b|missile|special operations|socom|darpa|corps of engineers)", re.I)
@@ -514,6 +516,8 @@ class ContractScanner:
         self.turn = 0
         self.failed_ai = 0
         self.state = None
+        self.last_wire = float("-inf")   # PR Newswire live feed (company press releases, minutes old)
+        self.last_us = float("-inf")     # extra US Google News search between the market rotation
 
     @staticmethod
     def enabled():
@@ -521,7 +525,8 @@ class ContractScanner:
 
     @staticmethod
     def label():
-        return (f"contract wins by any small/mid cap in {len(MARKETS)} markets "
+        return (f"contract wins by any small/mid cap in {len(MARKETS)} markets + PR Newswire live press releases "
+                f"(every {WIRE_SECONDS // 60} min; US news every {US_SECONDS // 60} min) "
                 f"(≥{fmt_usd(MIN_USD)}, {'public buyers' if GOV_ONLY else 'all buyers'}; 🚨 at ≥10% of market cap)")
 
     def fetch(self, market):
@@ -542,18 +547,45 @@ class ContractScanner:
                             "date": d, "market": label})
         return out
 
+    def fetch_wire(self):
+        """PR Newswire's live list of all press releases (any company; the original announcement)."""
+        out = []
+        root = ET.fromstring(_get("https://www.prnewswire.com/rss/news-releases-list.rss"))
+        for it in root.iter("item"):
+            try:
+                d = parsedate_to_datetime(it.findtext("pubDate") or "")
+            except Exception:
+                d = None
+            out.append({"title": html.unescape((it.findtext("title") or "").strip()),
+                        "link": (it.findtext("link") or "").strip(),
+                        "desc": " ".join(html.unescape(re.sub(r"<[^>]+>", " ", it.findtext("description") or "")).split()),
+                        "date": d, "market": "US", "wire": True})
+        return out
+
     def check(self, state):
-        """Search the next market; returns True if state changed."""
+        """Search the next source; returns True if state changed."""
         self.state = state
         cw = state.setdefault("_cw", {})
         seen = cw.setdefault("seen", {})
         init = cw.setdefault("init", {})
         sent = cw.setdefault("sent", [])
-        market = MARKETS[self.turn % len(MARKETS)]
-        self.turn += 1
-        label = market[0]
+        mono = time.monotonic()
+        if mono - self.last_wire >= WIRE_SECONDS:
+            self.last_wire = mono
+            market, label, fetch = None, "PR Newswire", self.fetch_wire
+        elif mono - self.last_us >= US_SECONDS:
+            self.last_us = mono
+            market, label = MARKETS[0], "US"
+            fetch = lambda: self.fetch(MARKETS[0])
+        else:
+            market = MARKETS[self.turn % len(MARKETS)]
+            self.turn += 1
+            label = market[0]
+            fetch = lambda: self.fetch(market)
+            if label == "US":
+                self.last_us = mono
         try:
-            items = self.fetch(market)
+            items = fetch()
         except Exception as e:
             log.warning("Contract scan %s failed: %s", label, type(e).__name__)
             return False
@@ -569,7 +601,8 @@ class ContractScanner:
             seen[k] = today
             if first and (not it["date"] or now - it["date"] > timedelta(hours=12)):
                 continue  # first look at this market: skip the older backlog
-            if AMOUNT.search(it["title"]) and CONTRACT_WORD.search(it["title"]):
+            text = it["title"] + (" " + it["desc"][:300] if it.get("wire") else "")
+            if AMOUNT.search(text) and CONTRACT_WORD.search(it["title"]):
                 fresh.append(it)
         init[label] = today
         old = (now - timedelta(days=SEEN_DAYS)).strftime("%Y-%m-%d")
