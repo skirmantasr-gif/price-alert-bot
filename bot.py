@@ -544,7 +544,8 @@ def main():
             extra += "\nLearning 🎓: ON (guesses checked against real prices, review every 2 days)"
             if learn.paper and learn.paper.Tracker.enabled():
                 extra += ("\nPractice portfolio 🧪: ON (pretend €100 per strategy" +
-                          (", every trade + daily report → separate channel)" if PAPER_CHAT_ID else ", daily report here)"))
+                          (", hourly trade updates while the market is open + daily report → separate channel)"
+                           if PAPER_CHAT_ID else ", daily report here)"))
         if HEARTBEAT_ROLE != "phone" and contracts.ON:
             extra += ("\nContract scan 🏛️: " + (contracts.ContractScanner.label()
                       + (" → separate channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")

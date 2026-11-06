@@ -15,8 +15,10 @@ Rules (same for all):
   between EUR and the stock's currency are ignored (returns are the stock's own % move)
 
 Signals come from learn.record() (every up/down call the bot sends, with the price at that moment).
-Own channel (PAPER_CHAT_ID): a quiet message for every pretend trade + the daily report; without it only the
-daily report goes to the main channel. Daily quiet 🧪 report after the New York close on weekdays.
+Own channel (PAPER_CHAT_ID): while the US market is open, one message per hour (10:00…16:00 New York, with
+sound) listing the pretend trades of that hour — sent only when something was bought or sold; trades made
+outside market hours go into the next session's first hourly message. Plus the daily report. Without the
+channel only the daily report goes to the main channel. Daily quiet 🧪 report after the New York close on weekdays.
 State: `_paper` in the encrypted state.
 Simulation only — not advice; real fills, spreads and pre/after-hours prices can differ.
 """
@@ -245,16 +247,21 @@ class Tracker:
             self.last = now
             step(st, now, self.price)
             changed = True
-        if self.live_trades:
-            new = trade_lines(st, st.get("posted", st["since"]))
-            for t, text in new[:10]:
-                if not self.send(text, True):
-                    break
-                st["posted"] = t
-                changed = True
-            if len(new) > 10:
-                st["posted"] = new[-1][0]  # flood guard: the daily report lists the rest
         et = _ny(now)
+        if self.live_trades and et.weekday() < 5 and 10 <= et.hour <= 16:
+            slot = et.strftime("%Y-%m-%d %H")
+            if st.get("hour_slot") != slot:
+                st["hour_slot"] = slot
+                changed = True
+                new = trade_lines(st, st.get("posted", st["since"]))
+                if new:
+                    head = (f"🧪 <b>Practice portfolio · {et.strftime('%H:00')} New York</b> — "
+                            f"{len(new)} trade{'s' if len(new) > 1 else ''} since the last update")
+                    body = [x for _, x in new[:15]] + ([f"… and {len(new) - 15} more"] if len(new) > 15 else [])
+                    vals = " · ".join(f"{name.split()[0]} €{value(st['pf'][k], now, self.price):.2f}"
+                                      for k, (name, _) in PORTFOLIOS.items())
+                    if self.send(head + "\n\n" + "\n\n".join(body) + "\n\nNow: " + vals, False):
+                        st["posted"] = new[-1][0]
         day = et.strftime("%Y-%m-%d")
         if et.weekday() < 5 and et.strftime("%H:%M") >= REPORT_NY and st.get("rep") != day:
             st["rep"] = day
