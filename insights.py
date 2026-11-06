@@ -214,6 +214,33 @@ def _line(f, view):
             + (f" — {html.escape(reason)}" if reason else ""))
 
 
+def recap(prev, prices, now):
+    """One line: how the previous outlook's UP / DOWN calls did since then (price then → price now).
+    prev = {"t": time, "calls": {ticker: [direction, confidence, price]}}; None if nothing to compare."""
+    if not prev or not prev.get("calls") or now - prev.get("t", 0) > 4 * 86400:
+        return None
+    bits, right, judged = [], 0, 0
+    for t, (d, _, p0) in sorted(prev["calls"].items(), key=lambda x: x[1][0] != "up"):
+        p1 = prices.get(t)
+        if not p0 or not p1:
+            continue
+        m = p1 / p0 - 1
+        if abs(m) < 0.0005:
+            mark = "➖"
+        else:
+            judged += 1
+            ok = (m > 0) == (d == "up")
+            right += ok
+            mark = "✅" if ok else "❌"
+        bits.append(f"${html.escape(t)} {'↑' if d == 'up' else '↓'} {m * 100:+.1f}% {mark}")
+    if not bits:
+        return None
+    then = datetime.fromtimestamp(prev["t"], NY)
+    when = then.strftime("%H:%M") if then.date() == datetime.fromtimestamp(now, NY).date() else then.strftime("%a %H:%M")
+    score = f" — {right} of {judged} right" if judged else ""
+    return f"↩️ Since the last outlook ({when} NY): " + " · ".join(bits) + score
+
+
 class HourlyInsights:
     def __init__(self, tickers, charts, volume, send):
         self.tickers = tickers
@@ -308,6 +335,9 @@ class HourlyInsights:
         lines = [f"🧭 <b>{title}</b> · {et.strftime('%H:%M')} New York ({local} {html.escape(extras.watchlist.TIMEZONE.split('/')[-1])})"]
         if summary:
             lines.append(f"<i>{html.escape(summary)}</i>")
+        back = recap(state.get("_ins", {}).get("prev"), {t: f["price"] for t, f in feats.items()}, now)
+        if back:
+            lines.append(back)
         lines.append("📈 <b>May go UP</b>")
         lines += [_line(feats[t], views[t]) for t in ups] or ["• none"]
         lines.append("📉 <b>May go DOWN</b>")
@@ -318,6 +348,8 @@ class HourlyInsights:
                 for t in flat))
         lines.append(f"<i>Automated guess from price, volume and news{' 🤖' if by_ai else ''} — not financial advice.</i>")
         if self.send("\n".join(lines)):
+            state.setdefault("_ins", {})["prev"] = {
+                "t": int(now), "calls": {t: [views[t][0], views[t][1], feats[t]["price"]] for t in ups + downs}}
             extras.bump(state, "outlook")
             if learn:
                 for t in feats:

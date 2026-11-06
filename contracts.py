@@ -532,9 +532,9 @@ class ContractScanner:
 
     @staticmethod
     def label():
-        return (f"contract wins by any small/mid cap in {len(MARKETS)} markets + PR Newswire live press releases"
-                f"{' + Benzinga real-time news (Alpaca, every minute)' if alpaca.ON else ''} "
-                f"(every {WIRE_SECONDS // 60} min; US news every {US_SECONDS // 60} min) "
+        return (f"contract wins by any small/mid cap: {len(MARKETS)} markets (US every {US_SECONDS // 60} min), "
+                f"PR Newswire press releases (every {WIRE_SECONDS // 60} min)"
+                f"{', Benzinga real-time news (every minute)' if alpaca.ON else ''} "
                 f"(≥{fmt_usd(MIN_USD)}, {'public buyers' if GOV_ONLY else 'all buyers'}; 🚨 at ≥10% of market cap)")
 
     def fetch(self, market):
