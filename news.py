@@ -25,6 +25,13 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
+try:
+    import alpaca
+except ImportError:  # e.g. an older phone copy without alpaca.py
+    class alpaca:  # noqa: N801
+        ON = False
+        recent = staticmethod(lambda: [])
+        selftest = staticmethod(lambda: "OFF (alpaca.py missing)")
 import extras
 import impact
 import insights
@@ -266,6 +273,19 @@ def prnewswire_news(tickers):
         for t in tickers:
             if _matches(it["title"] + " " + it["desc"], t):
                 out.append({**it, "ticker": t, "source": "PR Newswire"})
+    return out
+
+
+def alpaca_news(tickers):
+    """Benzinga real-time news via Alpaca (all symbols, filtered here by the article's own symbol tags)."""
+    want = {t.upper() for t in tickers}
+    out = []
+    for it in alpaca.recent():
+        if JUNK.search(it["title"]):
+            continue
+        for t in want.intersection(it["symbols"]):
+            out.append({"title": it["title"], "link": it["link"], "desc": it["desc"], "date": it["date"],
+                        "source": it["source"], "ticker": t})
     return out
 
 
@@ -586,8 +606,9 @@ class NewsWatcher:
                 self.fail[name] = "notified"
             return None
 
-    def check(self, state):
-        """Fetch all sources, queue new items, send up to MAX_SENDS_PER_POLL. Returns True if state changed."""
+    def check(self, state, fast=False):
+        """Fetch all sources, queue new items, send up to MAX_SENDS_PER_POLL. Returns True if state changed.
+        fast=True: only the real-time Alpaca feed (run every minute between the full rounds)."""
         ns = state.setdefault("_news", {})
         seen = ns.setdefault("seen", {})
         now = datetime.now(timezone.utc)
@@ -624,7 +645,13 @@ class NewsWatcher:
                 return
             new.append(item)
 
+        if alpaca.ON:
+            res, silent = run("Alpaca", alpaca_news, self.tickers)
+            for it in res:
+                consider(_hash(it["ticker"] + "|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
         mono = time.time()
+        if fast:
+            mono = float("-inf")  # nothing else is due
         do_contracts = mono - self.last_contract_search >= CONTRACT_SEARCH_SECONDS
         do_usa = mono - self.last_usaspending >= USASPENDING_SECONDS
         do_google = mono - self.last_google >= GOOGLE_SECONDS
@@ -640,7 +667,7 @@ class NewsWatcher:
         do_sa = mono - self.last_sa >= SA_SECONDS
         if do_sa:
             self.last_sa = mono
-        for t in self.tickers:
+        for t in ([] if fast else self.tickers):
             srcs = ([("Google", google_news)] if do_google else []) + [("Yahoo", yahoo_news)] \
                 + ([("SeekingAlpha", seekingalpha_news)] if do_sa else [])
             if do_contracts:
@@ -666,12 +693,13 @@ class NewsWatcher:
             res, silent = run("USAspending", usaspending, self.tickers)
             for a in res:
                 consider(_hash("usa|" + a["gid"]), a, silent)
-        res, silent = run("FDA", fda_news, self.tickers)
-        for it in res:
-            consider(_hash(it["ticker"] + "|fda|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
-        res, silent = run("PRNewswire", prnewswire_news, self.tickers)
-        for it in res:
-            consider(_hash(it["ticker"] + "|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
+        if not fast:
+            res, silent = run("FDA", fda_news, self.tickers)
+            for it in res:
+                consider(_hash(it["ticker"] + "|fda|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
+            res, silent = run("PRNewswire", prnewswire_news, self.tickers)
+            for it in res:
+                consider(_hash(it["ticker"] + "|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
 
         if stale:
             log.info("News: %d stale headline(s) skipped (published > %.0fh before first seen)", stale, NEWS_MAX_AGE_HOURS)

@@ -44,6 +44,13 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+try:
+    import alpaca
+except ImportError:  # e.g. an older phone copy without alpaca.py
+    class alpaca:  # noqa: N801
+        ON = False
+        recent = staticmethod(lambda: [])
+        selftest = staticmethod(lambda: "OFF (alpaca.py missing)")
 import buyout
 import contracts
 import extras
@@ -546,6 +553,8 @@ def main():
                 extra += ("\nPractice portfolio 🧪: ON (pretend €100 per strategy" +
                           (", hourly trade updates while the market is open + daily report → separate channel)"
                            if PAPER_CHAT_ID else ", daily report here)"))
+        if HEARTBEAT_ROLE != "phone":
+            extra += "\nReal-time news ⚡: " + alpaca.selftest()
         if HEARTBEAT_ROLE != "phone" and contracts.ON:
             extra += ("\nContract scan 🏛️: " + (contracts.ContractScanner.label()
                       + (" → separate channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
@@ -609,6 +618,11 @@ def main():
                 changed |= news.check(state)
             except Exception as e:
                 log.warning("News check failed: %s", type(e).__name__)
+        elif news and alpaca.ON and HEARTBEAT_ROLE != "phone":  # real-time feed between the full rounds
+            try:
+                changed |= news.check(state, fast=True)
+            except Exception as e:
+                log.warning("Fast news check failed: %s", type(e).__name__)
         if scanner and time.time() - last_scan >= CONTRACT_SCAN_SECONDS:
             last_scan = time.time()
             try:

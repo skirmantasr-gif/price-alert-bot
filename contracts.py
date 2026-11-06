@@ -36,6 +36,13 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
+try:
+    import alpaca
+except ImportError:  # e.g. an older phone copy without alpaca.py
+    class alpaca:  # noqa: N801
+        ON = False
+        recent = staticmethod(lambda: [])
+        selftest = staticmethod(lambda: "OFF (alpaca.py missing)")
 import impact
 
 try:
@@ -525,7 +532,8 @@ class ContractScanner:
 
     @staticmethod
     def label():
-        return (f"contract wins by any small/mid cap in {len(MARKETS)} markets + PR Newswire live press releases "
+        return (f"contract wins by any small/mid cap in {len(MARKETS)} markets + PR Newswire live press releases"
+                f"{' + Benzinga real-time news (Alpaca, every minute)' if alpaca.ON else ''} "
                 f"(every {WIRE_SECONDS // 60} min; US news every {US_SECONDS // 60} min) "
                 f"(≥{fmt_usd(MIN_USD)}, {'public buyers' if GOV_ONLY else 'all buyers'}; 🚨 at ≥10% of market cap)")
 
@@ -584,10 +592,21 @@ class ContractScanner:
             fetch = lambda: self.fetch(market)
             if label == "US":
                 self.last_us = mono
+        changed = self._scan(label, fetch, seen, init, sent)
+        if alpaca.ON:  # Benzinga real-time news (incl. all newswires), every call (~1 min)
+            changed |= self._scan("Alpaca", self.fetch_alpaca, seen, init, sent)
+        return changed
+
+    def fetch_alpaca(self):
+        return [{"title": it["title"], "link": it["link"], "market": "US", "wire": True, "date": it["date"],
+                 "desc": it["desc"] + (f" (stock symbols: {', '.join(it['symbols'][:5])})" if it["symbols"] else "")}
+                for it in alpaca.recent()]
+
+    def _scan(self, label, fetch, seen, init, sent):
         try:
             items = fetch()
         except Exception as e:
-            log.warning("Contract scan %s failed: %s", label, type(e).__name__)
+            log.warning("Contract scan %s failed: %s", label, getattr(e, "code", None) or type(e).__name__)
             return False
         now = datetime.now(timezone.utc)
         today = now.strftime("%Y-%m-%d")
