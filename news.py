@@ -53,6 +53,8 @@ GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "300"))  # Google blo
 CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
 USASPENDING_SECONDS = 3 * 3600    # federal award database (lags days behind press releases)
 CALENDAR_SECONDS = 6 * 3600       # Google News search for announced earnings / FDA dates
+SA_SECONDS = int(os.environ.get("SA_SECONDS", "120"))  # Seeking Alpha per-stock feed (Google lists SA items hours late)
+LATE_HOURS = 1.0                  # older than this when first seen → message says "published Xh ago"
 
 CONTRACT = re.compile(
     r"\b(contracts?|task orders?|delivery orders?|IDIQ|BPA|BARDA|Project BioShield|procurement|tender|"
@@ -242,6 +244,26 @@ def google_news(ticker):
         if not _matches(title, ticker):
             continue
         out.append({**it, "title": title, "source": src or "Google News"})
+    return out
+
+
+def seekingalpha_news(ticker):
+    """Seeking Alpha's public per-symbol RSS (news + analysis). Direct, so no Google indexing lag."""
+    url = f"https://seekingalpha.com/api/sa/combined/{urllib.parse.quote(ticker)}.xml"
+    out = []
+    for it in _rss_items(_get(url)):
+        if not JUNK.search(it["title"]) and _matches(it["title"] + " " + it["desc"], ticker):
+            out.append({**it, "source": "Seeking Alpha"})
+    return out
+
+
+def prnewswire_news(tickers):
+    """PR Newswire live list of all new press releases (~20 newest; polled every minute)."""
+    out = []
+    for it in _rss_items(_get("https://www.prnewswire.com/rss/news-releases-list.rss")):
+        for t in tickers:
+            if _matches(it["title"] + " " + it["desc"], t):
+                out.append({**it, "ticker": t, "source": "PR Newswire"})
     return out
 
 
@@ -540,6 +562,7 @@ class NewsWatcher:
         self.last_contract_search = 0.0
         self.last_usaspending = 0.0
         self.last_calendar = 0.0
+        self.last_sa = 0.0
 
     def sources_label(self):
         s = ["Google News", "Yahoo Finance", "FDA"]
@@ -607,8 +630,12 @@ class NewsWatcher:
         do_calendar = mono - self.last_calendar >= CALENDAR_SECONDS
         if do_calendar:
             self.last_calendar = mono
+        do_sa = mono - self.last_sa >= SA_SECONDS
+        if do_sa:
+            self.last_sa = mono
         for t in self.tickers:
-            srcs = ([("Google", google_news)] if do_google else []) + [("Yahoo", yahoo_news)]
+            srcs = ([("Google", google_news)] if do_google else []) + [("Yahoo", yahoo_news)] \
+                + ([("SeekingAlpha", seekingalpha_news)] if do_sa else [])
             if do_contracts:
                 srcs.append(("Google contracts", google_contracts))
             for name, fn in srcs:
@@ -635,6 +662,9 @@ class NewsWatcher:
         res, silent = run("FDA", fda_news, self.tickers)
         for it in res:
             consider(_hash(it["ticker"] + "|fda|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
+        res, silent = run("PRNewswire", prnewswire_news, self.tickers)
+        for it in res:
+            consider(_hash(it["ticker"] + "|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
 
         # merge same story from several sources (within this batch and vs. recently sent)
         reported = ns.setdefault("contracts", [])  # [ticker, $M, date] of contract wins already sent (public data)
@@ -771,5 +801,10 @@ class NewsWatcher:
         extra = ""
         if c is not None:
             extra = f"🏛️ Contract win: <b>{impact.money(c)}</b>\n" if c else "🏛️ Contract news (amount not in headline)\n"
+        d = it.get("date")
+        age = (datetime.now(timezone.utc) - d).total_seconds() / 3600 if d else 0
+        if age >= LATE_HOURS:
+            extra += (f"⏰ Published {age:.0f}h ago" if age < 48 else f"⏰ Published {age / 24:.0f} days ago") + \
+                     " — the news site listed it late, the market may already know\n"
         return (f"{icon} <b>${t}</b> {html.escape(it['title'])}\n{extra}"
                 f'<i>{src}</i>{self._when(it.get("date"))} · <a href="{html.escape(it["link"])}">Read</a>')
