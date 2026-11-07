@@ -31,6 +31,12 @@ jobs:
         run: |   # exact, hash-checked versions only
           pip install --quiet --require-hashes --only-binary ":all:" -r requirements-ai.txt
 
+      - name: Install PDF reader (ASX / HKEX announcement amounts)
+        continue-on-error: true   # optional; without it only the announcement headlines are used
+        run: |   # exact, hash-checked versions only
+          pip install --quiet --require-hashes --only-binary ":all:" -r requirements-pdf.txt
+          python -c "import pypdf, cryptography; print('PDF reader ready', pypdf.__version__)"
+
       - name: Load saved state (encrypted, so the public repo doesn't show what's watched)
         env:
           STATE_KEY: ${{ secrets.STATE_KEY }}         # own random key for the saved state
