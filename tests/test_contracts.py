@@ -157,6 +157,23 @@ class FirstReport(unittest.TestCase):
         self.assertAlmostEqual((NOW - d).total_seconds() / 3600, 18, delta=0.1)
         self.assertIn("Pentagon", src)
 
+    def test_old_contract_found_at_any_date_but_only_strict_matches(self):
+        sc, _ = scanner()
+        sc.first_seen = c.ContractScanner.first_seen.__get__(sc)
+        urls = []
+
+        def fake_get(url, **k):
+            urls.append(url)
+            return rss([("Zentrox wins $300m state road contracts - Daily Wire", format_datetime(NOW - timedelta(days=40))),
+                        ("Zentrox shares: 300 reasons to buy - Blog", format_datetime(NOW - timedelta(days=60))),
+                        ("Zentrox lands $300 million contract - Old News", format_datetime(NOW - timedelta(days=400)))])
+        with mock.patch.object(c, "_get", fake_get):
+            d, src = sc.first_seen(item("Zentrox wins $300m road contracts", hours_ago=14), reading(buyer="State roads"),
+                                   "Zentrox Systems Inc.")
+        self.assertAlmostEqual((NOW - d).total_seconds() / 86400, 40, delta=0.1)
+        self.assertIn("Daily Wire", src)
+        self.assertFalse(any("when%3A" in u for u in urls))
+
     def test_no_pentagon_search_for_civil_buyers(self):
         sc, _ = scanner()
         sc.first_seen = c.ContractScanner.first_seen.__get__(sc)
@@ -195,6 +212,12 @@ class Alerts(unittest.TestCase):
         text, silent = out[0]
         self.assertTrue(silent)
         self.assertIn("Likely first reported 18h ago", text)
+
+    def test_contract_first_reported_over_a_week_ago_not_sent(self):
+        ok, out, sent = self.handle(item("Zentrox wins $300m road contracts", hours_ago=14), reading(), first=24 * 40)
+        self.assertFalse(ok)
+        self.assertEqual(out, [])
+        self.assertEqual(sent, [])
 
     def test_small_relative_to_cap_is_quiet(self):
         ok, out, _ = self.handle(item("Zentrox lands $30 million Army contract"), reading(amount=30e6), cap=5e9)
