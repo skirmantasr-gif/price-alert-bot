@@ -48,7 +48,7 @@ SEC_CONTACT = os.environ.get("SEC_CONTACT", "").strip()
 # Tickers that only get 🚨 headlines (too chatty otherwise). Empty = all headlines.
 IMPORTANT_ONLY = watchlist.IMPORTANT_ONLY
 MAX_AGE_HOURS = 48          # ignore items published longer ago than this
-NEWS_MAX_AGE_HOURS = float(os.environ.get("NEWS_MAX_AGE_HOURS", "12"))  # headlines first seen later than this
+NEWS_MAX_AGE_HOURS = float(os.environ.get("NEWS_MAX_AGE_HOURS", "6"))  # headlines first seen later than this
 #   after publishing are stale (Google often lists small outlets a day late): remembered, not sent
 SEEN_TTL_DAYS = 10          # forget seen-hashes after this
 MAX_SENDS_PER_POLL = 15     # rest waits for the next poll (keeps price checks responsive)
@@ -67,7 +67,9 @@ USASPENDING_GROUP = 8              # company names per search (too many in one s
 USASPENDING_ON = os.environ.get("USASPENDING", "").strip().lower() == "true"
 CALENDAR_SECONDS = 6 * 3600       # Google News search for announced earnings / FDA dates
 SA_SECONDS = int(os.environ.get("SA_SECONDS", "120"))  # Seeking Alpha per-stock feed (Google lists SA items hours late)
-LATE_HOURS = 1.0                  # older than this when first seen → message says "published Xh ago"
+LATE_HOURS = 1.0                  # older than this when first seen → "⏰ published Xh ago", arrives silently
+RECENT_HOURS = 72                 # per-stock memory of sent / skipped headlines (kept in state, survives restarts)
+RECENT_PER_TICKER = 25
 
 CONTRACT = re.compile(
     r"\b(contracts?|task orders?|delivery orders?|IDIQ|BPA|BARDA|Project BioShield|procurement|tender|"
@@ -211,6 +213,32 @@ def _similar(a, b):
     if not a or not b:
         return False
     return len(a & b) / len(a | b) >= 0.6
+
+
+def _recent_add(ns, ticker, text, ts=None):
+    """Remember a headline / filing for this stock (repeat detection across runs)."""
+    rec = ns.setdefault("recent", {}).setdefault(ticker, [])
+    text = " ".join(str(text).split())[:200]
+    if text and not any(t == text for _, t in rec):
+        rec.append([int(ts or time.time()), text])
+        rec.sort()
+        del rec[:-RECENT_PER_TICKER]
+
+
+def _recent(ns, ticker, now=None):
+    """[(hours_ago, text)] of the last RECENT_HOURS, oldest first."""
+    now = now or time.time()
+    return [(round((now - ts) / 3600, 1), t) for ts, t in ns.get("recent", {}).get(ticker, [])
+            if now - ts <= RECENT_HOURS * 3600]
+
+
+def _prune_recent(ns, now=None):
+    now = now or time.time()
+    rec = ns.get("recent", {})
+    for t in list(rec):
+        rec[t] = [x for x in rec[t] if now - x[0] <= RECENT_HOURS * 3600]
+        if not rec[t]:
+            del rec[t]
 
 
 def _matches(text, ticker):
@@ -664,6 +692,7 @@ class NewsWatcher:
                 return
             if d and item.get("kind") == "news" and item.get("source") != "FDA.gov" and d.timestamp() < news_cutoff:
                 stale += 1
+                _recent_add(ns, item["ticker"], item["title"], d.timestamp())  # a later copy is then a repeat
                 return
             new.append(item)
 
@@ -742,8 +771,9 @@ class NewsWatcher:
                     if it["source"] not in dup["sources"]:
                         dup["sources"].append(it["source"])
                     continue
-                if any(t == it["ticker"] and _similar(rw, w) for t, rw in self.recent_titles):
-                    continue
+                if any(t == it["ticker"] and _similar(rw, w) for t, rw in self.recent_titles) or \
+                        any(_similar(_words(txt), w) for _, txt in _recent(ns, it["ticker"])):
+                    continue  # same story already sent / seen (also in an earlier run)
                 it["words"] = w
                 it["sources"] = [it["source"]]
             if it["kind"] == "news" and it["ticker"] in IMPORTANT_ONLY and not IMPORTANT.search(it["title"]):
@@ -752,6 +782,8 @@ class NewsWatcher:
 
         batch = self.queue[:MAX_SENDS_PER_POLL]
         for it in batch:
+            if it["kind"] == "news" and "earlier" not in it:  # for the AI repeat / old-news check
+                it["earlier"] = _recent(ns, it["ticker"])[-12:]
             if it["kind"] == "sec" and "insider" not in it:
                 it["insider"] = self._fetch("SEC EDGAR insider", insider_details, it)
             if it["kind"] == "sec" and "reorg" not in it and SEC_CONTACT:
@@ -769,6 +801,12 @@ class NewsWatcher:
                 log.info("News: federal award already reported; skipped")
                 self.queue.pop(0)
                 continue
+            if it.get("repeat"):
+                log.info("News: repeat of an earlier story (AI); skipped")
+                _recent_add(ns, it["ticker"], it["title"])
+                self.queue.pop(0)
+                changed = True
+                continue
             msg = self.format(it)
             if not self.send(msg):
                 log.warning("News: Telegram send failed, will retry next poll")
@@ -779,6 +817,7 @@ class NewsWatcher:
             if learn:
                 learn.record_news(state, it)
             extras.bump(state, "sec" if it["kind"] == "sec" else "news")
+            _recent_add(ns, it["ticker"], it["title"] if it["kind"] == "news" else extras._strip(msg.split("\n")[0]))
             changed = True
             if it.get("contract") or it["kind"] == "gov":
                 reported.append([it["ticker"], round((it.get("contract") or it.get("amount") or 0) / 1e6, 2), today])
@@ -794,6 +833,7 @@ class NewsWatcher:
         # prune old hashes
         old = datetime.fromtimestamp(now.timestamp() - SEEN_TTL_DAYS * 86400, timezone.utc).strftime("%Y-%m-%d")
         ns["contracts"] = [r for r in reported if r[2] >= old]
+        _prune_recent(ns)
         for k in [k for k, v in seen.items() if v < old]:
             del seen[k]
             changed = True
@@ -803,7 +843,7 @@ class NewsWatcher:
     def _when(d):
         if not d:
             return ""
-        return d.astimezone(timezone.utc).strftime(" · %b %d %H:%M UTC")
+        return " · " + extras.fmt_local(d)
 
     def format(self, it):
         msg = self._format(it)
@@ -862,8 +902,13 @@ class NewsWatcher:
             extra = f"🏛️ Contract win: <b>{impact.money(c)}</b>\n" if c else "🏛️ Contract news (amount not in headline)\n"
         d = it.get("date")
         age = (datetime.now(timezone.utc) - d).total_seconds() / 3600 if d else 0
+        late = age >= LATE_HOURS or it.get("old_event")
         if age >= LATE_HOURS:
             extra += (f"⏰ Published {age:.0f}h ago" if age < 48 else f"⏰ Published {age / 24:.0f} days ago") + \
                      " — the news site listed it late, the market may already know\n"
+        elif it.get("old_event"):
+            extra += "⏰ Old news — the event itself happened earlier, the market may already know\n"
+        if late:
+            icon = "⏰" + icon  # late / old news arrives without sound
         return (f"{icon} <b>${t}</b> {html.escape(it['title'])}\n{extra}"
                 f'<i>{src}</i>{self._when(it.get("date"))} · <a href="{html.escape(it["link"])}">Read</a>')

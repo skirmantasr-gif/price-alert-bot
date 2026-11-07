@@ -25,6 +25,20 @@ log = logging.getLogger("bot")
 UA = "Mozilla/5.0 (compatible; price-alert-bot/1.0)"
 
 
+def tz_label():
+    tz = watchlist.TIMEZONE or "UTC"
+    return {"Europe/Vilnius": "LT", "UTC": "UTC"}.get(tz, tz.split("/")[-1].replace("_", " "))
+
+
+def fmt_local(d, fmt="%b %d %H:%M"):
+    """Time in the owner's time zone (watchlist "timezone", e.g. Europe/Vilnius → "Nov 07 09:39 LT")."""
+    try:
+        from zoneinfo import ZoneInfo
+        return d.astimezone(ZoneInfo(watchlist.TIMEZONE)).strftime(fmt) + " " + tz_label()
+    except Exception:
+        return d.astimezone(timezone.utc).strftime(fmt) + " UTC"
+
+
 def local_now():
     try:
         from zoneinfo import ZoneInfo
@@ -45,7 +59,7 @@ def _strip(text):
 # ---------------------------------------------------------------- 1. quiet / loud
 # Messages starting with these arrive without sound; everything else (price moves, 🚨, halts, volume,
 # insider buys/sales, warnings) rings.
-QUIET_PREFIXES = ("📰", "📄", "⚪", "👤", "☀️", "✅", "🧭", "🎓")
+QUIET_PREFIXES = ("📰", "📄", "⚪", "👤", "☀️", "✅", "🧭", "🎓", "⏰")  # ⏰ = late / old news
 
 
 def is_quiet(text):

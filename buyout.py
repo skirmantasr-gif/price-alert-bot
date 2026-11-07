@@ -536,7 +536,7 @@ class BuyoutWatch:
                 if not new("n:" + re.sub(r"\W+", "", h["title"].lower())[:90], "news:" + t):
                     continue
                 head = (f"🎯🚨 <b>${t}</b> TAKEOVER-TYPE NEWS" if bo_hit else f"📰 <b>${t}</b> major news")
-                when = h["date"].astimezone(timezone.utc).strftime(" · %b %d %H:%M UTC") if h["date"] else ""
+                when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""
                 self.send(f"{head}\n{html.escape(h['title'])}\n<i>{html.escape(h['source'] or 'news')}</i>{when}\n"
                           f'<a href="{html.escape(h["link"])}">Open</a>', None if bo_hit else True)
                 extras.remember(t, f"{head}\n{h['title']}", h["link"])
