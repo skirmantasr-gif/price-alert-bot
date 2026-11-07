@@ -128,6 +128,8 @@ USA_DAYS = 10         # look at awards first signed in the last N days
 USA_PAGES = 3         # 100 awards per page, newest first
 USA_SEEN_DAYS = 30
 OLD_NEWS_HOURS = 12   # older news (first report anywhere) never gets 🚨 (the price has usually reacted already)
+STALE_HOURS = 72  # first reported over 3 days ago (an old contract in a new article): not sent at all
+FIRST_LOOKBACK_DAYS = 365  # how far back the "first reported" search looks for the same company + amount
 MILITARY_RE = re.compile(r"(army|navy|air force|marine|space force|defen[cs]e|department of war|pentagon|\bDLA\b|"
                          r"\bDoD\b|missile|special operations|socom|darpa|corps of engineers)", re.I)
 VERIFY_RATIO = 0.0    # every candidate is double-checked with a second news search first (~10 a day)
@@ -196,6 +198,9 @@ For each item return:
 - amount: total value as a plain number in units of the currency (e.g. 250000000, 1.2 crore = 12000000,
   3億円 = 300000000, 2억원 = 200000000). 0 if no amount is stated.
 - currency: ISO code (USD, EUR, GBP, JPY, CNY, HKD, TWD, KRW, INR, SEK, CHF, CAD, AUD...).
+  A bare "$" or "m"/"bn" with "$" means the dollar of the item's market or of the buyer's country
+  (Australia / Australian state or council -> AUD, Canada -> CAD, Hong Kong -> HKD, Taiwan -> TWD,
+  New Zealand -> NZD, Singapore -> SGD). USD only for "US$" / "USD" or a US buyer / US market item.
 - kind: "new" (a new contract/order), "modification" (add-on to an existing contract), "ceiling"
   (IDIQ / framework / "up to" / multiple-award maximum, not guaranteed spend), "option" (option exercised).
   Use "ceiling" also for: multi-year enterprise / blanket purchase agreements, "worth up to", "potential value",
@@ -829,6 +834,9 @@ class ContractScanner:
         age_h = (now - it["date"]).total_seconds() / 3600 if it.get("date") else None
         first, first_src = self.first_seen(it, r, name)
         first_h = (now - first).total_seconds() / 3600 if first else None
+        if first_h is not None and first_h > STALE_HOURS:
+            log.info("Contract scan: old contract in a new article (first reported %.0f days ago); skipped", first_h / 24)
+            return False
         if first_h is not None and age_h is not None and first_h - age_h < 1:
             first_h, first_src = None, ""  # nothing meaningfully earlier
         oldest = max(x for x in (age_h, first_h, 0) if x is not None)
@@ -867,7 +875,7 @@ class ContractScanner:
         a = r["amount"]
         num = f"{a / 1e9:.3g}" if a >= 1e9 else f"{a / 1e6:.3g}" if a >= 1e6 else f"{a:,.0f}"
         first, src = it.get("date"), ""
-        queries = [(f'"{word}" {num} when:3d', "amount")]
+        queries = [(f'"{word}" {num}', "amount")]  # any date: old contracts get re-published as new articles
         if label == "US" and MILITARY_RE.search(r.get("buyer") or ""):
             queries.append((f'"{word}" site:war.gov when:3d', "dod"))
         for q, how in queries:
@@ -884,6 +892,12 @@ class ContractScanner:
                         d = parsedate_to_datetime(x.findtext("pubDate") or "")
                     except Exception:
                         continue
+                    age_d = (datetime.now(timezone.utc) - d).total_seconds() / 86400
+                    if how == "amount" and age_d > 3 and not (
+                            age_d <= FIRST_LOOKBACK_DAYS and re.search(rf"(?<![\d.,]){re.escape(num)}(?![\d,]|\.\d)", t)
+                            and set(_name_words(r.get("company") or name)[:1]) & set(_name_words(t))
+                            and CONTRACT_WORD.search(t)):
+                        continue  # older than 3 days: only the same company + amount + contract word counts
                     if first is None or d < first:
                         first = d
                         src = ("the Pentagon's daily contract list" if how == "dod"
