@@ -201,3 +201,41 @@ class UsaspendingRouting(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HEARTBEAT_ROLE": role, "USASPENDING": flag}):
                 self.assertEqual(importlib.reload(news).USASPENDING_ON, want, (role, flag))
         importlib.reload(news)
+
+
+class UsaspendingGroups(unittest.TestCase):
+    """Too many company names in one search → HTTP 503 from USAspending.gov, so names go in small groups."""
+
+    def test_names_split_into_groups_and_results_merged(self):
+        import json
+        names = {f"Z{i:02d}": [f"Zentrox {i:02d} Inc"] for i in range(18)}
+        bodies = []
+
+        class Resp:
+            def __init__(self, data):
+                self.data = data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return self.data
+
+        def fake(req, timeout=0):
+            body = json.loads(req.data)
+            bodies.append(body["filters"]["recipient_search_text"])
+            res = [{"Recipient Name": n.upper(), "Award Amount": 50e6, "Base Obligation Date": "2099-01-01",
+                    "generated_internal_id": "same" if n.endswith("00 Inc") or n.endswith("08 Inc") else n}
+                   for n in body["filters"]["recipient_search_text"]]
+            return Resp(json.dumps({"results": res}).encode())
+
+        with mock.patch.dict(news.GOV_NAMES, names, clear=True), \
+                mock.patch.object(news.urllib.request, "urlopen", fake), mock.patch.object(news.time, "sleep"):
+            got = news.usaspending(list(names))
+        self.assertEqual([len(b) for b in bodies], [8, 8, 2])
+        self.assertTrue(all(len(b) <= news.USASPENDING_GROUP for b in bodies))
+        self.assertEqual(len(got), 17)                       # same award id in two groups → listed once
+        self.assertEqual(got[0]["ticker"], "Z00")
