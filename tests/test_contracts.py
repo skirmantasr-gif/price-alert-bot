@@ -1,4 +1,5 @@
 """🏛️ Contract scanner: pre-filter, sources, first-report check, 🚨 rules, Alpaca pass."""
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -54,6 +55,8 @@ def scanner(extract=None, cap=1e9, traded=False, sent=None):
     sc.verify = lambda it, r, name: r
     sc.first_seen = lambda it, r, name: (it.get("date"), "")
     sc.fetch_usaspending = lambda: []
+    sc.fetch_asx = lambda: []
+    sc.fetch_hkex = lambda: []
     return sc, out
 
 
@@ -103,6 +106,81 @@ class PreFilter(unittest.TestCase):
         for _ in range(2):
             sc._scan("T", lambda: [item("Zentrox wins $40 million Navy contract")], cw["seen"], cw["init"], cw["sent"])
         self.assertEqual(len(calls), 2)
+
+
+ASX_JSON = json.dumps({"data": {"items": [
+    {"symbol": "ZTX", "headline": "Zentrox awarded $120m state rail contract", "documentKey": "1-2-A",
+     "date": "2026-11-05T22:10:00.000Z", "isPriceSensitive": True, "announcementTypes": ["Other"]},
+    {"symbol": "ZTX", "headline": "Change of Director's Interest Notice", "documentKey": "1-3-B",
+     "date": "2026-11-05T22:00:00.000Z", "isPriceSensitive": False, "announcementTypes": ["Other"]},
+    {"symbol": "ZOR", "headline": "MAP TEST 1", "documentKey": "1-4-C", "date": "2026-11-05T21:00:00.000Z",
+     "announcementTypes": ["MAP Test"]}]}}).encode()
+HKEX_JSON = json.dumps({"newsInfoLst": [
+    {"title": "VOLUNTARY ANNOUNCEMENT\nWINNING OF TENDER", "webPath": "/listedco/a/1.pdf", "relTime": "06/11/2026 18:30",
+     "stock": [{"sc": "00777", "sn": "ZENTROX HLDG"}]},
+    {"title": "NOTICE OF AGM", "webPath": "/listedco/a/2.pdf", "relTime": "06/11/2026 18:00",
+     "stock": [{"sc": "00777", "sn": "ZENTROX HLDG"}]}]}).encode()
+
+
+class Exchanges(unittest.TestCase):
+    def test_asx_items_parsed_and_only_contract_headlines_opened(self):
+        with mock.patch.object(c, "_get", lambda url, **k: ASX_JSON):
+            items = c.ContractScanner.fetch_asx()
+        self.assertEqual(len(items), 2)  # MAP test skipped
+        a, b = items
+        self.assertEqual(a["symbol"], "ZTX.AX")
+        self.assertEqual(a["market"], "Australia")
+        self.assertTrue(a["pdf"].endswith("1-2-A"))
+        self.assertEqual(b["pdf"], "")
+        self.assertEqual(a["date"], datetime(2026, 11, 5, 22, 10, tzinfo=timezone.utc))
+
+    def test_hkex_time_is_hong_kong_and_symbol_padded(self):
+        with mock.patch.object(c, "_get", lambda url, **k: HKEX_JSON):
+            items = c.ContractScanner.fetch_hkex()
+        a, b = items
+        self.assertEqual(a["symbol"], "0777.HK")
+        self.assertEqual(a["date"], datetime(2026, 11, 6, 10, 30, tzinfo=timezone.utc))
+        self.assertTrue(a["pdf"].startswith("https://www1.hkexnews.hk/"))
+        self.assertIn("WINNING OF TENDER", a["title"])
+        self.assertEqual(b["pdf"], "")
+
+    def exitem(self, title, pdf="https://x/1.pdf", symbol="ZTX.AX"):
+        return {"title": title, "link": pdf, "desc": "", "date": NOW - timedelta(minutes=5), "market": "Australia",
+                "exchange": True, "symbol": symbol, "pdf": pdf}
+
+    def test_pdf_opened_once_and_amount_read_from_it(self):
+        got, opened = [], []
+        sc, _ = scanner(extract=lambda xs: got.extend(xs) or {})
+        cw = {"seen": {}, "init": {"ASX": "x"}, "sent": []}
+        items = [self.exitem("ZTX: Contract award (ASX: ZTX)"), self.exitem("ZTX: Quarterly report", pdf="")]
+        body = "Zentrox has been awarded a contract worth A$120 million by the state rail authority."
+        with mock.patch.object(c, "pdf_text", lambda url: opened.append(url) or body):
+            for _ in range(2):
+                sc._scan("ASX", lambda: items, cw["seen"], cw["init"], cw["sent"])
+        self.assertEqual(opened, ["https://x/1.pdf"])
+        self.assertEqual([g["title"] for g in got], ["ZTX: Contract award (ASX: ZTX)"])
+        self.assertIn("A$120 million", got[0]["desc"])
+
+    def test_no_amount_in_pdf_not_sent_to_ai(self):
+        got = []
+        sc, _ = scanner(extract=lambda xs: got.extend(xs) or {})
+        cw = {"seen": {}, "init": {"ASX": "x"}, "sent": []}
+        with mock.patch.object(c, "pdf_text", lambda url: "Zentrox was selected as preferred tenderer."):
+            sc._scan("ASX", lambda: [self.exitem("ZTX: Preferred tenderer (ASX: ZTX)")], cw["seen"], cw["init"], cw["sent"])
+        self.assertEqual(got, [])
+
+    def test_exchange_symbol_used_and_no_google_second_check(self):
+        sc, out = scanner()
+        sc.verify = lambda *a: self.fail("second check must be skipped for exchange announcements")
+        sc.yahoo.find = lambda *a: self.fail("symbol is known from the exchange")
+        ok = sc.handle(self.exitem("ZTX: Contract award (ASX: ZTX)"), reading(currency="AUD"), [], NOW.strftime("%Y-%m-%d"))
+        self.assertTrue(ok)
+        self.assertIn("ZTX.AX", out[0][0])
+        self.assertIn("Australia", out[0][0])
+
+    def test_pdf_text_without_pypdf_is_empty(self):
+        with mock.patch.dict("sys.modules", {"pypdf": None}):
+            self.assertEqual(c.pdf_text("https://x/1.pdf"), "")
 
 
 class Sources(unittest.TestCase):
