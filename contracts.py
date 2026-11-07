@@ -663,12 +663,13 @@ class ContractScanner:
         today = now.strftime("%Y-%m-%d")
         seen = cw.setdefault("usa", {})
         first = "USAspending" not in cw.setdefault("init", {})
-        n = listed = 0
+        n = listed = new = 0
         for a in awards:
             gid = a.get("generated_internal_id") or a.get("Award ID") or ""
             if not gid or gid in seen:
                 continue
             seen[gid] = today
+            new += 1
             if first:
                 continue  # first look: the existing awards are skipped quietly
             res = self.handle_award(a, sent, today)
@@ -678,7 +679,8 @@ class ContractScanner:
         old = (now - timedelta(days=USA_SEEN_DAYS)).strftime("%Y-%m-%d")
         for k in [k for k, d in seen.items() if d < old]:
             del seen[k]
-        log.info("Contract scan USAspending: %d new federal awards, %d by listed companies, %d sent", len(awards), listed, n)
+        log.info("Contract scan USAspending: %d awards in %d days, %d new%s, %d by listed companies, %d sent",
+                 len(awards), USA_DAYS, new, " (first look, skipped)" if first else "", listed, n)
         return True
 
     def handle_award(self, a, sent, today):
