@@ -198,3 +198,121 @@ class UsaspendingGroups(unittest.TestCase):
         self.assertTrue(all(len(b) <= news.USASPENDING_GROUP for b in bodies))
         self.assertEqual(len(got), 17)                       # same award id in two groups → listed once
         self.assertEqual(got[0]["ticker"], "Z00")
+
+
+def headline(title, minutes_ago=5, source="Some Site", link="https://example.com/n"):
+    return {"title": title, "link": link, "source": source, "desc": "", "date": NOW - timedelta(minutes=minutes_ago)}
+
+
+class OldNews(unittest.TestCase):
+    """Old / repeated stories must not arrive as fresh alerts."""
+
+    def watcher(self, out):
+        return news.NewsWatcher(["ZNTX"], lambda m, *a: out.append(m) or True)
+
+    def run_check(self, w, st, items, ai=None):
+        feed = list(items)
+        patches = [mock.patch.object(news, n, lambda *a: []) for n in
+                   ("google_news", "seekingalpha_news", "google_contracts", "google_calendar", "fda_news",
+                    "prnewswire_news")]
+        patches.append(mock.patch.object(news, "yahoo_news", lambda t: feed))
+        patches.append(mock.patch.object(news.time, "sleep"))
+        patches.append(mock.patch.object(impact, "ai_enabled", lambda: ai is not None))
+        if ai:
+            patches.append(mock.patch.object(impact, "_ai", ai))
+        for p in patches:
+            p.start()
+        try:
+            w.last_google = w.last_sa = w.last_contract_search = w.last_calendar = float("-inf")
+            w.check(st)
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_same_story_not_resent_after_restart(self):
+        out, st = [], {"_news": {"init": ["Yahoo:ZNTX"]}}
+        self.run_check(self.watcher(out), st, [headline("Zentrox Wins Large Navy Order For Drones")])
+        self.run_check(self.watcher(out), st,           # new run = new watcher, same saved state
+                       [headline("Zentrox Wins Large Navy Order For Drones Today", link="https://other.example/x")])
+        self.assertEqual(len(out), 1)
+
+    def test_ai_repeat_is_skipped_and_ai_sees_earlier_items(self):
+        out, st = [], {"_news": {"init": ["Yahoo:ZNTX"]}}
+        seen_earlier = []
+
+        def fake_ai(items, companies):
+            for it in items:
+                seen_earlier.append(it.get("earlier"))
+                it["repeat"] = bool(it.get("earlier"))
+            return {i: ("neutral", "low", "") for i in range(len(items))}
+        self.run_check(self.watcher(out), st, [headline("Former CFO sells 7,321 Zentrox shares")], ai=fake_ai)
+        self.run_check(self.watcher(out), st, [headline("Zentrox ex-finance chief offloads $20,074 of stock",
+                                                        link="https://b.example/y")], ai=fake_ai)
+        self.assertEqual(len(out), 1)
+        self.assertIn("Former CFO sells", seen_earlier[-1][0][1])
+
+    def test_late_news_is_silent_and_labelled(self):
+        from extras import is_quiet
+        w = news.NewsWatcher(["ZNTX"], lambda *a: True)
+        msg = w._format({"kind": "news", "ticker": "ZNTX", "title": "Zentrox to be acquired at $9 per share",
+                         "link": "https://x", "source": "Some Site", "date": NOW - timedelta(hours=3)})
+        self.assertTrue(msg.startswith("⏰🚨"))
+        self.assertTrue(is_quiet(msg))
+        fresh = w._format({"kind": "news", "ticker": "ZNTX", "title": "Zentrox to be acquired at $9 per share",
+                           "link": "https://x", "source": "Some Site", "date": NOW})
+        self.assertFalse(is_quiet(fresh))
+        old = w._format({"kind": "news", "ticker": "ZNTX", "title": "Form 4 Zentrox: director buys, For: 4 November",
+                         "link": "https://x", "source": "Some Site", "date": NOW, "old_event": True})
+        self.assertIn("⏰ Old news", old)
+        self.assertTrue(is_quiet(old))
+
+    def test_stale_skips_go_into_memory(self):
+        out, st = [], {"_news": {"init": ["Yahoo:ZNTX"]}}
+        self.run_check(self.watcher(out), st, [headline("Zentrox Wins Large Navy Order For Drones",
+                                                        minutes_ago=60 * (news.NEWS_MAX_AGE_HOURS + 1))])
+        self.assertEqual(out, [])
+        self.run_check(self.watcher(out), st, [headline("Zentrox Wins Large Navy Order For Drones Today",
+                                                        link="https://c.example/z")])
+        self.assertEqual(out, [])                         # fresh-dated copy of a story that was already old
+
+    def test_times_in_owner_time_zone(self):
+        import extras
+        w = news.NewsWatcher(["ZNTX"], lambda *a: True)
+        d = datetime(2026, 11, 7, 7, 39, tzinfo=timezone.utc)
+        with mock.patch.object(extras.watchlist, "TIMEZONE", "Europe/Vilnius"):
+            self.assertEqual(w._when(d), " · Nov 07 09:39 LT")
+        with mock.patch.object(extras.watchlist, "TIMEZONE", "UTC"):
+            self.assertEqual(w._when(d), " · Nov 07 07:39 UTC")
+
+
+class AIFlags(unittest.TestCase):
+    def test_payload_has_earlier_and_flags_are_read(self):
+        import json as _j
+        sent = {}
+
+        class Resp:
+            stop_reason = "end_turn"
+            content = [type("B", (), {"type": "text", "text": _j.dumps({"items": [
+                {"id": 0, "direction": "neutral", "confidence": "low", "reason": "", "repeat": True, "old_event": False},
+                {"id": 1, "direction": "up", "confidence": "low", "reason": "x", "repeat": True, "old_event": True}]})})]
+
+        class Client:
+            class messages:
+                @staticmethod
+                def create(**k):
+                    sent.update(k)
+                    return Resp()
+            beta = type("Beta", (), {"messages": messages})
+
+        items = [{"kind": "news", "ticker": "ZNTX", "title": "Zentrox CFO sells shares", "source": "A",
+                  "earlier": [(5.0, "SEC Form 4: Zentrox CFO sale")]},
+                 {"kind": "news", "ticker": "ZNTX", "title": "Zentrox weekly recap", "source": "B"}]
+        import sys, types
+        with mock.patch.object(impact, "_client", Client()), mock.patch.object(impact, "learn", None), \
+                mock.patch.dict(sys.modules, {"anthropic": types.ModuleType("anthropic")}):
+            impact._ai(items, {"ZNTX": "Zentrox"})
+        payload = sent["messages"][0]["content"]
+        self.assertIn("SEC Form 4: Zentrox CFO sale", payload)
+        self.assertTrue(items[0]["repeat"])
+        self.assertFalse(items[1]["repeat"])             # nothing earlier to repeat
+        self.assertTrue(items[1]["old_event"])
