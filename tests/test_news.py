@@ -143,3 +143,61 @@ class Guard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def award(gid, amount=50e6):
+    return {"kind": "gov", "ticker": "ZNTX", "award_id": gid, "gid": gid, "amount": amount, "recipient": "ZENTROX INC",
+            "agency": "Department of Defense", "sub_agency": "Army", "desc": "TEST SUPPLIES", "signed": "2026-11-01",
+            "start": "2026-11-01", "end": "2027-11-01", "date": None, "link": "https://www.usaspending.gov/award/x"}
+
+
+class UsaspendingRouting(unittest.TestCase):
+    """USAspending.gov answers GitHub's servers with HTTP 503, so the phone runs it alone (gov_only)."""
+    no_other = {n: mock.patch.object(news, n, side_effect=AssertionError(n + " called in gov-only mode"))
+                for n in ("google_news", "yahoo_news", "seekingalpha_news", "google_contracts", "google_calendar",
+                          "sec_filings", "fda_news", "prnewswire_news", "alpaca_news")}
+
+    def test_gov_only_backlog_silent_then_new_award_sent(self):
+        out = []
+        w = news.NewsWatcher(["ZNTX"], lambda m, *a: out.append(m) or True, gov_only=True)
+        st = {}
+        batches = [[award("A1")], [award("A2"), award("A1")]]
+        with mock.patch.object(news, "usaspending", lambda t: batches.pop(0)), \
+                mock.patch.object(news, "USASPENDING_ON", False), \
+                mock.patch.object(impact, "ai_enabled", lambda: False):
+            for p in self.no_other.values():
+                p.start()
+            try:
+                w.check(st)
+                self.assertEqual(out, [])                   # first look: existing awards skipped quietly
+                w.last_usaspending = float("-inf")
+                w.check(st)
+            finally:
+                for p in self.no_other.values():
+                    p.stop()
+        self.assertEqual(len(out), 1)
+        self.assertIn("ZNTX", out[0])
+
+    def test_gov_only_waits_three_hours_between_queries(self):
+        calls = []
+        w = news.NewsWatcher(["ZNTX"], lambda *a: True, gov_only=True)
+        with mock.patch.object(news, "usaspending", lambda t: calls.append(1) or []):
+            w.check({})
+            w.check({})
+        self.assertEqual(len(calls), 1)
+
+    def test_github_skips_usaspending(self):
+        w = news.NewsWatcher([], lambda *a: True)
+        with mock.patch.object(news, "USASPENDING_ON", False), \
+                mock.patch.object(news, "usaspending", side_effect=AssertionError("USAspending called on GitHub")), \
+                mock.patch.object(news, "fda_news", lambda t: []), mock.patch.object(news, "prnewswire_news", lambda t: []):
+            w.check({})
+            self.assertIn("via the phone", w.sources_label())
+
+    def test_default_off_only_for_github_role(self):
+        import importlib, os
+        for role, flag, want in (("github", "", False), ("phone", "", True), ("", "", True), ("github", "true", True),
+                                 ("phone", "false", False)):
+            with mock.patch.dict(os.environ, {"HEARTBEAT_ROLE": role, "USASPENDING": flag}):
+                self.assertEqual(importlib.reload(news).USASPENDING_ON, want, (role, flag))
+        importlib.reload(news)
