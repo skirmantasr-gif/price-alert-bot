@@ -53,6 +53,7 @@ def scanner(extract=None, cap=1e9, traded=False, sent=None):
                            extract=extract or (lambda items: {}), yahoo=FakeYahoo(cap, traded), etfs=NoETF(), ucits=NoETF())
     sc.verify = lambda it, r, name: r
     sc.first_seen = lambda it, r, name: (it.get("date"), "")
+    sc.fetch_usaspending = lambda: []
     return sc, out
 
 
@@ -221,3 +222,75 @@ class Alerts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def award(gid, name="ZENTROX SYSTEMS, INC.", amount=40e6, days_ago=3, desc="DEPOT SUPPORT SERVICES"):
+    return {"Award ID": gid, "generated_internal_id": "CONT_AWD_" + gid, "Recipient Name": name, "Award Amount": amount,
+            "Awarding Agency": "Department of Homeland Security", "Awarding Sub Agency": "U.S. Coast Guard",
+            "Description": desc, "Base Obligation Date": (NOW - timedelta(days=days_ago)).strftime("%Y-%m-%d")}
+
+
+class Usaspending(unittest.TestCase):
+    """🏛️ All new US federal awards from USAspending.gov → listed US companies (on IBKR / Trading 212 / Revolut)."""
+
+    def run_scan(self, batches, yahoo=None, cap=1e9):
+        sc, out = scanner(cap=cap)
+        if yahoo:
+            sc.yahoo = yahoo
+        b = list(batches)
+        sc.fetch_usaspending = lambda: b.pop(0)
+        st = {}
+        for _ in range(len(batches)):
+            sc.last_usa = float("-inf")
+            sc.last_wire = sc.last_us = float("inf")   # only the USAspending pass in this test
+            with mock.patch.object(sc, "fetch", lambda m: []):
+                sc.check(st)
+        return out, st
+
+    def test_backlog_quiet_then_new_award_sent_with_platforms(self):
+        out, st = self.run_scan([[award("A1")], [award("A2", amount=55e6), award("A1")]])
+        self.assertEqual(len(out), 1)
+        text, silent = out[0]
+        self.assertTrue(silent)                                  # official data is days old: never loud
+        self.assertIn("$55.00M", text)
+        self.assertIn("Trading 212 ✅", text)
+        self.assertIn("Revolut ✅", text)
+        self.assertIn("usaspending.gov/award/CONT_AWD_A2", text)
+        self.assertIn("Homeland Security", text)
+        self.assertEqual(set(st["_cw"]["usa"]), {"CONT_AWD_A1", "CONT_AWD_A2"})
+
+    def test_private_or_foreign_or_wrong_name_skipped(self):
+        class Y(FakeYahoo):
+            def find(self, company, hint):
+                return {"Zentrox Systems": ("ZNTX", "Zentrox Systems Inc."),
+                        "Acme": None,                                            # private company
+                        "Bbb Tech": ("BBB.L", "BBB Tech plc"),                   # only listed in London
+                        "American Widget": ("AAA", "American Airlines Group")}.get(company)
+        out, _ = self.run_scan([[], [award("B1", "ACME FEDERAL LLC"), award("B2", "BBB TECH LTD"),
+                                     award("B3", "AMERICAN WIDGET CO"), award("B4")]], yahoo=Y())
+        self.assertEqual(len(out), 1)
+        self.assertIn("ZNTX", out[0][0])
+
+    def test_any_market_cap_and_no_double_report(self):
+        out, _ = self.run_scan([[], [award("C1", amount=20e6)]], cap=500e9)   # mega cap is reported too
+        self.assertEqual(len(out), 1)
+        sc, out2 = scanner()
+        sent = [["ZNTX", 20.0, NOW.strftime("%Y-%m-%d")]]                       # same award came from the news
+        self.assertFalse(sc.handle_award(award("C2", amount=20.5e6), sent, NOW.strftime("%Y-%m-%d")))
+        self.assertEqual(out2, [])
+
+    def test_fetch_failure_is_logged_not_raised(self):
+        sc, out = scanner()
+        sc.fetch_usaspending = mock.Mock(side_effect=OSError("503"))
+        sc.last_wire = sc.last_us = float("inf")
+        with mock.patch.object(sc, "fetch", lambda m: []):
+            sc.check({})
+        self.assertEqual(out, [])
+
+    def test_name_match(self):
+        self.assertTrue(c._gov_name_match("ROCKET LAB USA, INC.", "Rocket Lab Corporation"))
+        self.assertFalse(c._gov_name_match("AMERICAN WIDGET CO", "American Airlines Group Inc."))
+        self.assertFalse(c._gov_name_match("GILBANE FEDERAL", "Gilead Sciences, Inc."))
+        self.assertEqual(c._gov_query("ROCKET LAB USA, INC."), "Rocket Lab")
+        self.assertEqual(c._gov_query("ZENTROX SYSTEMS, INC."), "Zentrox Systems")
+        self.assertEqual(c._gov_query("ACME FEDERAL LLC"), "Acme")
