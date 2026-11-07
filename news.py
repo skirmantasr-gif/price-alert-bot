@@ -61,6 +61,7 @@ CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))   # 🚨 + 
 GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "300"))  # Google blocks too-frequent automated searches
 CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
 USASPENDING_SECONDS = 3 * 3600    # federal award database (lags days behind press releases)
+USASPENDING_GROUP = 8              # company names per search (too many in one search → HTTP 503)
 # USAspending.gov answers GitHub's cloud servers with HTTP 503 (every call failed, Nov 5-7 2026) but works from a home
 # connection, so the phone runs it (gov_only watcher, see bot.py) and GitHub skips it. USASPENDING=true/false overrides.
 USASPENDING_ON = os.environ.get("USASPENDING", "").strip().lower() == "true" or (
@@ -322,15 +323,31 @@ def google_calendar(ticker):
 
 
 def usaspending(tickers):
-    """Federal contract awards >= CONTRACT_MIN first signed in the last 45 days, for all watched companies in one
-    query (USAspending.gov, free, no key; it is slow, ~1 min)."""
-    import json
+    """Federal contract awards >= CONTRACT_MIN first signed in the last 45 days, for all watched companies
+    (USAspending.gov, free, no key; a few searches of USASPENDING_GROUP names each)."""
     names = {n: t for t in tickers for n in GOV_NAMES.get(t, [])}
     if not names:
         return []
     today = datetime.now(timezone.utc).date()
     since = today.fromordinal(today.toordinal() - 45).isoformat()
-    body = {"filters": {"recipient_search_text": list(names), "award_type_codes": ["A", "B", "C", "D"],
+    # One search with too many names gets HTTP 503 (tested 2026-11-07: 16 names OK, 17 fail), so ask in small groups.
+    out, seen_gid, all_names = [], set(), list(names)
+    for i in range(0, len(all_names), USASPENDING_GROUP):
+        group = all_names[i:i + USASPENDING_GROUP]
+        if i:
+            time.sleep(1)
+        for a in _usaspending_query(group, since, today):
+            gid = a.get("generated_internal_id") or a.get("Award ID") or ""
+            if gid in seen_gid:
+                continue
+            seen_gid.add(gid)
+            out.extend(_usaspending_award(a, names, since))
+    return out
+
+
+def _usaspending_query(group, since, today):
+    import json
+    body = {"filters": {"recipient_search_text": group, "award_type_codes": ["A", "B", "C", "D"],
                         "award_amounts": [{"lower_bound": CONTRACT_MIN}],
                         "time_period": [{"start_date": since, "end_date": today.isoformat(),
                                          "date_type": "last_modified_date"}]},
@@ -342,25 +359,26 @@ def usaspending(tickers):
                                  data=json.dumps(body).encode(), method="POST",
                                  headers={"User-Agent": UA, "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as r:
-        data = json.loads(r.read())
-    out = []
-    for a in data.get("results", []):
-        rname = a.get("Recipient Name") or ""
-        t = next((tk for n, tk in names.items() if re.search(r"\b" + re.escape(n) + r"\b", rname, re.I)), None)
-        if not t:
-            continue  # fuzzy search can return other companies
-        amt = _num(a.get("Award Amount"))
-        signed = (a.get("Base Obligation Date") or a.get("Start Date") or "")[:10]
-        if amt < CONTRACT_MIN or not signed or signed < since:
-            continue  # old award that was only modified
-        gid = a.get("generated_internal_id") or a.get("Award ID") or ""
-        out.append({"kind": "gov", "ticker": t, "award_id": a.get("Award ID") or gid, "gid": gid, "amount": amt,
-                    "recipient": rname, "agency": a.get("Awarding Agency") or "",
-                    "sub_agency": a.get("Awarding Sub Agency") or "", "desc": a.get("Description") or "",
-                    "signed": signed, "start": a.get("Start Date") or "", "end": a.get("End Date") or "", "date": None,
-                    "link": f"https://www.usaspending.gov/award/{urllib.parse.quote(gid)}" if gid else
-                            "https://www.usaspending.gov/search"})
-    return out
+        return json.loads(r.read()).get("results", [])
+
+
+def _usaspending_award(a, names, since):
+    """[] or [award dict] for one search result."""
+    rname = a.get("Recipient Name") or ""
+    t = next((tk for n, tk in names.items() if re.search(r"\b" + re.escape(n) + r"\b", rname, re.I)), None)
+    if not t:
+        return []  # fuzzy search can return other companies
+    amt = _num(a.get("Award Amount"))
+    signed = (a.get("Base Obligation Date") or a.get("Start Date") or "")[:10]
+    if amt < CONTRACT_MIN or not signed or signed < since:
+        return []  # old award that was only modified
+    gid = a.get("generated_internal_id") or a.get("Award ID") or ""
+    return [{"kind": "gov", "ticker": t, "award_id": a.get("Award ID") or gid, "gid": gid, "amount": amt,
+             "recipient": rname, "agency": a.get("Awarding Agency") or "",
+             "sub_agency": a.get("Awarding Sub Agency") or "", "desc": a.get("Description") or "",
+             "signed": signed, "start": a.get("Start Date") or "", "end": a.get("End Date") or "", "date": None,
+             "link": f"https://www.usaspending.gov/award/{urllib.parse.quote(gid)}" if gid else
+                     "https://www.usaspending.gov/search"}]
 
 
 def yahoo_news(ticker):
