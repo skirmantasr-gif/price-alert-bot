@@ -8,7 +8,7 @@ from tests.helpers import data_of, flat, ny, session
 TUE, WED, THU, FRI = (2026, 11, 3), (2026, 11, 4), (2026, 11, 5), (2026, 11, 6)
 
 
-def sig(tk="AAA", d="up", c="high", src="news", p0=9.0):
+def sig(tk="AAA", d="up", c="high", src="news", p0=10.0):
     return {"tk": tk, "src": src, "d": d, "c": c, "p0": p0}
 
 
@@ -21,17 +21,17 @@ def placed_at(st, t):
 class Fills(unittest.TestCase):
     def test_order_waits_and_fills_at_next_opening_price_not_alert_price(self):
         st = paper.new_state(ny(*TUE, 6))
-        paper.on_signal(st, sig(p0=9.0))           # alert price 9.0, market closed
+        paper.on_signal(st, sig(p0=9.8))           # alert price 9.8, market closed
         placed_at(st, ny(*TUE, 7))
         pf = st["pf"]["strong"]
         self.assertIn("AAA", pf["pending"])
-        self.assertAlmostEqual(pf["cash"], paper.START_EUR - paper.SIZE_EUR)  # cash reserved
+        self.assertAlmostEqual(pf["cash"], paper.START_EUR - paper.SIZE_STRONG_EUR)  # €15 reserved (strong call)
         data = data_of({"AAA": session(TUE, [(10.0, 10.1)] + [(10.1, 10.1)] * 77)})
         paper.step(st, ny(*TUE, 7, 30), data)       # before the open: still waiting
         self.assertIn("AAA", pf["pending"])
         paper.step(st, ny(*TUE, 9, 40), data)
         pos = pf["open"]["AAA"]
-        self.assertAlmostEqual(pos["p0"], 10.0 * (1 + paper.slip(data("AAA"), 10.0)))  # open + spread, not 9.0
+        self.assertAlmostEqual(pos["p0"], 10.0 * (1 + paper.slip(data("AAA"), 10.0)))  # open + spread, not 9.8
         self.assertEqual(pos["t"], ny(*TUE, 9, 30))
 
     def test_spread_depends_on_liquidity_and_currency(self):
@@ -60,9 +60,13 @@ class Fills(unittest.TestCase):
     def test_max_open_positions(self):
         st = paper.new_state(ny(*TUE, 6))
         for i in range(paper.MAX_OPEN + 3):
-            paper.on_signal(st, sig(f"T{i}"))
-        self.assertEqual(len(st["pf"]["strong"]["pending"]), paper.MAX_OPEN)
-        self.assertGreaterEqual(st["pf"]["strong"]["cash"], -1e-9)
+            paper.on_signal(st, sig(f"T{i}", c="medium"))          # €10 each
+        self.assertEqual(len(st["pf"]["likely"]["pending"]), paper.MAX_OPEN)
+        self.assertGreaterEqual(st["pf"]["likely"]["cash"], -1e-9)
+        st = paper.new_state(ny(*TUE, 6))
+        for i in range(paper.MAX_OPEN):
+            paper.on_signal(st, sig(f"T{i}"))                      # €15 each: cash runs out after 6
+        self.assertEqual(len(st["pf"]["strong"]["pending"]), int(paper.START_EUR // paper.SIZE_STRONG_EUR))
 
     def test_unfilled_order_cancelled_after_7_days(self):
         st = paper.new_state(ny(*TUE, 6))
@@ -97,15 +101,37 @@ class Exits(unittest.TestCase):
         paper.step(st, ny(*TUE, 16), data)
         self.assertEqual(st["pf"]["strong"]["closed"][-1]["why"], "take profit +15%")
 
-    def test_sells_at_close_after_three_trading_days(self):
-        bars = flat(TUE, 10) + flat(WED, 10.2) + flat(THU, 10.3) + flat(FRI, 10.4)
+    def test_no_time_limit_flat_stock_is_kept(self):
+        bars = flat(TUE, 10) + flat(WED, 10.05) + flat(THU, 10.05) + flat(FRI, 10.05)
         st, data = self._bought(bars)
-        paper.step(st, ny(*THU, 12), data)                          # day 2 of 3
-        self.assertIn("AAA", st["pf"]["strong"]["open"])
         paper.step(st, ny(*FRI, 18), data)
+        self.assertIn("AAA", st["pf"]["strong"]["open"])
+
+    def test_profit_lock_sells_soon_after_buying(self):
+        # bought at the 09:30 open, up +6% by 09:50, then falls: sold ~30 minutes after buying, not days later
+        bars = session(TUE, [(10, 10), (10.2, 10.3), (10.4, 10.6), (10.6, 10.6), (10.5, 10.35), (10.3, 10.3)]
+                       + [(10.3, 10.3)] * 72)
+        st, data = self._bought(bars)
+        paper.step(st, ny(*TUE, 10, 30), data)
         c = st["pf"]["strong"]["closed"][-1]
-        self.assertIn("3 days held", c["why"])
-        self.assertEqual(paper._ny(c["t"]).strftime("%a"), "Fri")
+        self.assertIn("profit lock", c["why"])
+        self.assertEqual(c["t"], bars[5][0])                      # next bar after the 2% drop from the high
+        self.assertLessEqual(c["t"] - bars[0][0], 30 * 60)
+        self.assertGreater(c["ret"], 0.02)
+
+    def test_profit_lock_needs_plus_3_percent_first(self):
+        bars = session(TUE, [(10, 10), (10.2, 10.2), (10.0, 9.95)] + [(9.95, 9.95)] * 75)   # +2%, then −2.5%
+        st, data = self._bought(bars)
+        paper.step(st, ny(*TUE, 16), data)
+        self.assertIn("AAA", st["pf"]["strong"]["open"])
+
+    def test_high_is_remembered_between_checks(self):
+        bars = session(TUE, [(10, 10), (10.5, 10.6)] + [(10.6, 10.6)] * 3 + [(10.35, 10.35)] * 73)
+        st, data = self._bought(bars)
+        paper.step(st, ny(*TUE, 9, 45), data)                    # sees the high 10.6
+        self.assertAlmostEqual(st["pf"]["strong"]["open"]["AAA"]["hi"], 10.6)
+        paper.step(st, ny(*TUE, 11), data)                       # later drop from that high → sold
+        self.assertIn("profit lock", st["pf"]["strong"]["closed"][-1]["why"])
 
     def test_down_call_exits_open_position_at_next_price(self):
         bars = flat(TUE, 10)
@@ -114,6 +140,28 @@ class Exits(unittest.TestCase):
         paper.on_signal(st, sig(d="down", c="high"), now=ny(*TUE, 11))
         paper.step(st, ny(*TUE, 12), data)
         self.assertEqual(st["pf"]["strong"]["closed"][-1]["why"], "DOWN call")
+
+
+class BuyRules(unittest.TestCase):
+    def test_no_chasing_cancels_if_price_ran_away(self):
+        st = paper.new_state(ny(*TUE, 6))
+        paper.on_signal(st, sig(p0=10.0))
+        placed_at(st, ny(*TUE, 7))
+        paper.step(st, ny(*TUE, 9, 40), data_of({"AAA": session(TUE, [(10.6, 10.6)] * 78)}))   # opens +6%
+        pf = st["pf"]["strong"]
+        self.assertEqual(pf["open"], {})
+        self.assertAlmostEqual(pf["cash"], paper.START_EUR)       # money back
+        self.assertIn("not chasing", pf["log"][-1]["why"])
+
+    def test_bigger_bet_on_strong_calls(self):
+        st = paper.new_state(ny(*TUE, 6))
+        paper.on_signal(st, sig("AAA", c="high"))
+        paper.on_signal(st, sig("BBB", c="medium"))
+        self.assertEqual(st["pf"]["likely"]["pending"]["AAA"]["eur"], 15)
+        self.assertEqual(st["pf"]["likely"]["pending"]["BBB"]["eur"], 10)
+        placed_at(st, ny(*TUE, 7))
+        paper.step(st, ny(*TUE, 10), data_of({"AAA": flat(TUE, 10), "BBB": flat(TUE, 10)}))
+        self.assertAlmostEqual(st["pf"]["likely"]["open"]["AAA"]["eur"], 15 * (1 - paper.FEE))
 
 
 class Statement(unittest.TestCase):
@@ -136,24 +184,34 @@ class Statement(unittest.TestCase):
         txt = paper.account(self.st, "likely", ny(*TUE, 11), self.data)
         pf = self.st["pf"]["likely"]
         self.assertIn(f"€{paper.value(pf, ny(*TUE, 11), self.data):.2f}", txt)
-        self.assertIn("Free cash €80.00", txt)
+        self.assertIn("Free cash €75.00", txt)                    # €15 strong call + €10 waiting order
         self.assertIn("reserved €10", txt)
         self.assertIn("$AAA", txt)
-        self.assertIn("day 0/3", txt)
+        self.assertIn("sells at", txt)
+        self.assertIn("high 11", txt)
         self.assertIn("$BBB", txt)                                  # waiting order listed
         self.assertIn("all in cash", paper.account(self.st, "outlook", ny(*TUE, 11), self.data))
 
-    def test_hourly_post_loud_with_trades_silent_without(self):
+    def test_trades_posted_right_away_with_sound_statements_silent(self):
         sent = []
         tr = paper.Tracker(None, lambda text, silent: sent.append((text, silent)) or True, live_trades=True)
         tr.data = self.data
-        tr._post(self.st, ny(*TUE, 11), "11:00 New York")
-        self.assertFalse(sent[-1][1])
+        self.assertTrue(tr._trades_now(self.st, ny(*TUE, 11)))
+        self.assertFalse(sent[-1][1])                              # with sound
         self.assertIn("Bought <b>$AAA</b>", sent[-1][0])
+        self.assertFalse(tr._trades_now(self.st, ny(*TUE, 11, 5)))  # nothing new: no message
         tr._post(self.st, ny(*TUE, 12), "12:00 New York")
-        self.assertTrue(sent[-1][1])
-        self.assertIn("No trades this hour", sent[-1][0])
+        self.assertTrue(sent[-1][1])                               # statement: silent
         self.assertLess(max(len(t) for t, _ in sent), 4096)
+
+    def test_identical_portfolios_shown_once(self):
+        sent = []
+        tr = paper.Tracker(None, lambda text, silent: sent.append((text, silent)) or True, live_trades=True)
+        tr.data = data_of({"SPY": flat(TUE, 500)})
+        st = paper.new_state(ny(*TUE, 6))
+        tr._post(st, ny(*TUE, 12), "12:00 New York")
+        self.assertIn("same trades so far", sent[-1][0])
+        self.assertEqual(sent[-1][0].count("Free cash"), 1)
 
 
 class Timing(unittest.TestCase):
