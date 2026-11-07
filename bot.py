@@ -17,8 +17,6 @@ Env vars:
   TICKERS              comma list, only used when WATCHLIST is not set
   THRESHOLD_PCT        default 2 (per-stock values in WATCHLIST override it)
   HEARTBEAT_ROLE       "github" or "phone": enables the watchdog (each side checks the other)
-  GOV_CHAT_ID / GOV_NAMES  phone only: USAspending.gov federal awards for these company names → this channel
-                       (GOV_NAMES = JSON {"ABC": ["ABC Corp"]}; GitHub skips USAspending, it is blocked there)
   POLL_SECONDS         default 60
   STATE_FILE           default ./state.json
   NEWS                 "true" (default) = also send news headlines + SEC filings (see news.py)
@@ -69,7 +67,6 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 CONTRACTS_CHAT_ID = os.environ.get("CONTRACTS_CHAT_ID", "").strip() or CHAT_ID
 BUYOUT_CHAT_ID = os.environ.get("BUYOUT_CHAT_ID", "").strip()  # buyout watch is off without its own channel
 PAPER_CHAT_ID = os.environ.get("PAPER_CHAT_ID", "").strip()    # 🧪 practice portfolio channel (else: main, report only)
-GOV_CHAT_ID = os.environ.get("GOV_CHAT_ID", "").strip()        # phone: channel for USAspending.gov federal awards
 CONTRACT_SCAN_SECONDS = int(os.environ.get("CONTRACT_SCAN_SECONDS", "60"))  # one market per scan
 TICKERS = watchlist.TICKERS
 THRESHOLDS = watchlist.THRESHOLDS  # ticker -> fraction, e.g. 0.02
@@ -570,14 +567,6 @@ def main():
         log.info("Third-party chat forwarding enabled")
 
     news = NewsWatcher(NEWS_TICKERS, send_telegram) if NEWS_ON else None
-    gov = None
-    if HEARTBEAT_ROLE == "phone" and GOV_CHAT_ID and watchlist.GOV_NAMES:  # USAspending.gov blocks GitHub's servers
-        gov = NewsWatcher(list(watchlist.GOV_NAMES), lambda text, silent=None: send_telegram(text, silent, GOV_CHAT_ID),
-                          gov_only=True)
-        log.info("USAspending.gov check enabled (%d companies)", len(watchlist.GOV_NAMES))
-        if STARTUP_MESSAGE:
-            send_telegram("✅ Phone: USAspending.gov federal-award check ON (every 3 h) → this channel.", True, GOV_CHAT_ID)
-    last_gov = 0
     last_news = 0
     scanner = None
     if HEARTBEAT_ROLE != "phone" and contracts.ContractScanner.enabled():
@@ -634,12 +623,6 @@ def main():
                 changed |= news.check(state, fast=True)
             except Exception as e:
                 log.warning("Fast news check failed: %s", type(e).__name__)
-        if gov and time.time() - last_gov >= NEWS_SECONDS:
-            last_gov = time.time()
-            try:
-                changed |= gov.check(state)
-            except Exception as e:
-                log.warning("USAspending check failed: %s", type(e).__name__)
         if scanner and time.time() - last_scan >= CONTRACT_SCAN_SECONDS:
             last_scan = time.time()
             try:

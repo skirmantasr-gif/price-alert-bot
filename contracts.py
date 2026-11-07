@@ -120,6 +120,13 @@ CEILING_RE = re.compile(r"(\bIDIQ\b|indefinite[- ]delivery|\bceiling\b|\bup to\b
                         r"单价合同|上限金額|上限额)", re.I)
 WIRE_SECONDS = int(os.environ.get("CONTRACT_WIRE_SECONDS", "120"))   # PR Newswire live feed
 US_SECONDS = int(os.environ.get("CONTRACT_US_SECONDS", "300"))       # US Google News search
+# USAspending.gov: every NEW US federal contract award (any company), official data. Civilian agencies appear ~2-5
+# days after signing, the Defense Department only after a 90-day delay. Searched with no company list (a long name
+# list gets HTTP 503). Winners are matched to US-listed stocks (= on IBKR, Trading 212 and Revolut).
+USA_SECONDS = int(os.environ.get("CONTRACT_USASPENDING_SECONDS", "3600"))
+USA_DAYS = 10         # look at awards first signed in the last N days
+USA_PAGES = 3         # 100 awards per page, newest first
+USA_SEEN_DAYS = 30
 OLD_NEWS_HOURS = 12   # older news (first report anywhere) never gets 🚨 (the price has usually reacted already)
 MILITARY_RE = re.compile(r"(army|navy|air force|marine|space force|defen[cs]e|department of war|pentagon|\bDLA\b|"
                          r"\bDoD\b|missile|special operations|socom|darpa|corps of engineers)", re.I)
@@ -255,6 +262,30 @@ def _split(sym):
 
 _GENERIC = {"the", "group", "holdings", "holding", "inc", "corp", "corporation", "co", "ltd", "limited", "plc",
             "sa", "se", "ag", "nv", "ab", "asa", "company", "technologies", "international", "systems", "industries"}
+
+
+_GOV_SKIP = {"llc", "lp", "llp", "usa", "us", "america", "north", "federal", "government", "services", "solutions",
+             "dba", "of", "and", "the", "inc", "corp", "co"}
+
+
+def _gov_name_match(recipient, listed):
+    """USAspending recipient (e.g. 'ROCKET LAB USA, INC.') vs a listed company name: the first two distinctive
+    words of the recipient must both be in the listed name (one word only if it is the whole name)."""
+    wa = [w for w in _name_words(recipient) if w not in _GOV_SKIP][:2]
+    wb = set(_name_words(listed))
+    return bool(wa) and len(wa[0]) >= 3 and all(w in wb for w in wa)
+
+
+_LEGAL = {"inc", "incorporated", "llc", "lp", "llp", "ltd", "plc", "corp", "corporation", "co", "company", "usa", "us",
+          "dba", "the", "federal"}
+
+
+def _gov_query(recipient):
+    """'ROCKET LAB USA, INC.' -> 'Rocket Lab' (Yahoo search finds listed names better without legal suffixes)."""
+    words = re.findall(r"[A-Za-z0-9&'.-]+", recipient)
+    while words and re.sub(r"\W", "", words[-1]).lower() in _LEGAL:
+        words.pop()
+    return " ".join(words).title() or recipient
 
 
 def _same_name(a, b):
@@ -525,6 +556,7 @@ class ContractScanner:
         self.state = None
         self.last_wire = float("-inf")   # PR Newswire live feed (company press releases, minutes old)
         self.last_us = float("-inf")     # extra US Google News search between the market rotation
+        self.last_usa = float("-inf")    # USAspending.gov new federal awards
 
     @staticmethod
     def enabled():
@@ -534,7 +566,8 @@ class ContractScanner:
     def label():
         return (f"contract wins by any small/mid cap: {len(MARKETS)} markets (US every {US_SECONDS // 60} min), "
                 f"PR Newswire press releases (every {WIRE_SECONDS // 60} min)"
-                f"{', Benzinga real-time news (every minute)' if alpaca.ON else ''} "
+                f"{', Benzinga real-time news (every minute)' if alpaca.ON else ''}, "
+                f"USAspending.gov new US federal awards (every {USA_SECONDS // 60} min, any listed US company) "
                 f"(≥{fmt_usd(MIN_USD)}, {'public buyers' if GOV_ONLY else 'all buyers'}; 🚨 at ≥10% of market cap)")
 
     def fetch(self, market):
@@ -595,7 +628,107 @@ class ContractScanner:
         changed = self._scan(label, fetch, seen, init, sent)
         if alpaca.ON:  # Benzinga real-time news (incl. all newswires), every call (~1 min)
             changed |= self._scan("Alpaca", self.fetch_alpaca, seen, init, sent)
+        if mono - self.last_usa >= USA_SECONDS:  # official US federal awards, hourly
+            self.last_usa = mono
+            changed |= self.scan_usaspending(cw, sent)
         return changed
+
+    @staticmethod
+    def fetch_usaspending():
+        """New federal contract awards >= MIN_USD first signed in the last USA_DAYS days, newest first."""
+        today = datetime.now(timezone.utc).date()
+        since = (today - timedelta(days=USA_DAYS)).isoformat()
+        out = []
+        for page in range(1, USA_PAGES + 1):
+            body = {"filters": {"award_type_codes": ["A", "B", "C", "D"], "award_amounts": [{"lower_bound": MIN_USD}],
+                                "time_period": [{"start_date": since, "end_date": today.isoformat(),
+                                                 "date_type": "new_awards_only"}]},
+                    "fields": ["Award ID", "Recipient Name", "Award Amount", "Awarding Agency", "Awarding Sub Agency",
+                               "Description", "Base Obligation Date", "generated_internal_id"],
+                    "limit": 100, "page": page, "sort": "Base Obligation Date", "order": "desc"}
+            j = json.loads(_get("https://api.usaspending.gov/api/v2/search/spending_by_award/", timeout=90,
+                                data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}))
+            out += j.get("results") or []
+            if not (j.get("page_metadata") or {}).get("hasNext"):
+                break
+        return out
+
+    def scan_usaspending(self, cw, sent):
+        try:
+            awards = self.fetch_usaspending()
+        except Exception as e:
+            log.warning("Contract scan USAspending failed: %s", getattr(e, "code", None) or type(e).__name__)
+            return False
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        seen = cw.setdefault("usa", {})
+        first = "USAspending" not in cw.setdefault("init", {})
+        n = listed = 0
+        for a in awards:
+            gid = a.get("generated_internal_id") or a.get("Award ID") or ""
+            if not gid or gid in seen:
+                continue
+            seen[gid] = today
+            if first:
+                continue  # first look: the existing awards are skipped quietly
+            res = self.handle_award(a, sent, today)
+            listed += res is not None
+            n += bool(res)
+        cw["init"]["USAspending"] = today
+        old = (now - timedelta(days=USA_SEEN_DAYS)).strftime("%Y-%m-%d")
+        for k in [k for k, d in seen.items() if d < old]:
+            del seen[k]
+        log.info("Contract scan USAspending: %d new federal awards, %d by listed companies, %d sent", len(awards), listed, n)
+        return True
+
+    def handle_award(self, a, sent, today):
+        """One USAspending award. None = winner is not a listed US stock; else True/False = sent or not."""
+        rname = (a.get("Recipient Name") or "").strip()
+        usd = float(a.get("Award Amount") or 0)
+        if not rname or usd < MIN_USD:
+            return None
+        found = self.yahoo.find(_gov_query(rname), "")
+        if not found or _split(found[0])[1] != "" or not _gov_name_match(rname, found[1]):
+            return None  # private company, or only listed abroad
+        sym, name = found
+        try:
+            cap = self.yahoo.market_cap_usd(sym)
+        except Exception:
+            return False
+        for s_sym, s_m, _ in sent:  # already reported from the news
+            if s_sym == sym and abs(s_m - usd / 1e6) <= 0.2 * max(s_m, usd / 1e6):
+                return False
+        try:
+            signed = datetime.strptime((a.get("Base Obligation Date") or "")[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            signed = None
+        agency = " · ".join(x for x in (a.get("Awarding Agency"), a.get("Awarding Sub Agency")) if x)
+        gid = a.get("generated_internal_id") or ""
+        desc = " ".join((a.get("Description") or "").split()).capitalize()
+        r = {"is_win": True, "company": rname, "ticker_hint": sym, "amount": usd, "currency": "USD",
+             "kind": "ceiling" if CEILING_RE.search(desc) else "new", "public_buyer": True, "buyer": agency,
+             "summary": desc}
+        it = {"title": f"USAspending.gov: {rname} — award {a.get('Award ID') or gid} signed {(a.get('Base Obligation Date') or '')[:10]}",
+              "link": f"https://www.usaspending.gov/award/{urllib.parse.quote(gid)}" if gid else "https://www.usaspending.gov/search",
+              "market": "US", "date": signed, "desc": desc}
+        ratio = usd / cap if cap else 0
+        now = datetime.now(timezone.utc)
+        age_h = (now - signed).total_seconds() / 3600 if signed else None
+        first, src = self.first_seen(it, r, name)
+        first_h = (now - first).total_seconds() / 3600 if first and (signed is None or first < signed) else None
+        # official data comes days after signing: the market has usually seen the company's own announcement
+        it = {**it, "age_h": age_h, "first_h": first_h, "first_src": src if first_h is not None else "", "traded": False}
+        text = self.format(it, r, sym, name, usd, cap, ratio, False)
+        if self.send(text, True):
+            sent.append([sym, round(usd / 1e6, 2), today])
+            if learn and self.state is not None:
+                try:
+                    learn.record(self.state, "contract", sym, "up", "low", "rules",
+                                 f"USAspending {r['kind']} {ratio * 100:.1f}% of cap", self.yahoo.price(sym))
+                except Exception as e:
+                    log.warning("Contract learning record failed: %s", type(e).__name__)
+            return True
+        return False
 
     def fetch_alpaca(self):
         return [{"title": it["title"], "link": it["link"], "market": "US", "wire": True, "date": it["date"],

@@ -62,11 +62,9 @@ GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "300"))  # Google blo
 CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
 USASPENDING_SECONDS = 3 * 3600    # federal award database (lags days behind press releases)
 USASPENDING_GROUP = 8              # company names per search (too many in one search → HTTP 503)
-# USAspending.gov answers GitHub's cloud servers with HTTP 503 (every call failed, Nov 5-7 2026) but works from a home
-# connection, so the phone runs it (gov_only watcher, see bot.py) and GitHub skips it. USASPENDING=true/false overrides.
-USASPENDING_ON = os.environ.get("USASPENDING", "").strip().lower() == "true" or (
-    os.environ.get("USASPENDING", "").strip().lower() != "false"
-    and os.environ.get("HEARTBEAT_ROLE", "").strip().lower() != "github")
+# Watchlist-only USAspending check: off by default since 2026-11-07 — contracts.py now scans ALL new federal awards
+# (any listed US company, watchlist included). USASPENDING=true turns this older check back on.
+USASPENDING_ON = os.environ.get("USASPENDING", "").strip().lower() == "true"
 CALENDAR_SECONDS = 6 * 3600       # Google News search for announced earnings / FDA dates
 SA_SECONDS = int(os.environ.get("SA_SECONDS", "120"))  # Seeking Alpha per-stock feed (Google lists SA items hours late)
 LATE_HOURS = 1.0                  # older than this when first seen → message says "published Xh ago"
@@ -597,10 +595,9 @@ def format_insider(it, ins):
 
 # ---------------------------------------------------------------- checker
 class NewsWatcher:
-    def __init__(self, tickers, send, gov_only=False):
+    def __init__(self, tickers, send):
         self.tickers = [t for t in tickers]
         self.send = send
-        self.gov_only = gov_only  # phone: only USAspending.gov federal awards (blocked from GitHub)
         self.recent_titles = []   # (ticker, words) of headlines sent/seen this run, for fuzzy dedup
         self.fail = {}            # source -> first failure time
         self.queue = []
@@ -614,7 +611,7 @@ class NewsWatcher:
         s = ["Google News", "Yahoo Finance", "FDA"]
         s.append("SEC EDGAR + insider trades" if SEC_CONTACT else "SEC EDGAR off (no SEC_CONTACT)")
         s.append(f"contract wins (🏛️, 🚨 from {impact.money(CONTRACT_MIN)})" +
-                 (" + USAspending.gov federal awards" if USASPENDING_ON else " (USAspending.gov federal awards: via the phone)"))
+                 (" + USAspending.gov federal awards" if USASPENDING_ON else ""))
         return ", ".join(s) + ". Impact guesses: " + (f"AI ({impact.AI_MODEL})" if impact.ai_enabled() else "keyword rules")
 
     def _fetch(self, name, fn, *args):
@@ -670,7 +667,7 @@ class NewsWatcher:
                 return
             new.append(item)
 
-        if alpaca.ON and not self.gov_only:
+        if alpaca.ON:
             res, silent = run("Alpaca", alpaca_news, self.tickers)
             for it in res:
                 consider(_hash(it["ticker"] + "|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
@@ -678,7 +675,7 @@ class NewsWatcher:
         if fast:
             mono = float("-inf")  # nothing else is due
         do_contracts = mono - self.last_contract_search >= CONTRACT_SEARCH_SECONDS
-        do_usa = (USASPENDING_ON or self.gov_only) and mono - self.last_usaspending >= USASPENDING_SECONDS
+        do_usa = USASPENDING_ON and mono - self.last_usaspending >= USASPENDING_SECONDS
         do_google = mono - self.last_google >= GOOGLE_SECONDS
         if do_google:
             self.last_google = mono
@@ -692,7 +689,7 @@ class NewsWatcher:
         do_sa = mono - self.last_sa >= SA_SECONDS
         if do_sa:
             self.last_sa = mono
-        for t in ([] if fast or self.gov_only else self.tickers):
+        for t in ([] if fast else self.tickers):
             srcs = ([("Google", google_news)] if do_google else []) + [("Yahoo", yahoo_news)] \
                 + ([("SeekingAlpha", seekingalpha_news)] if do_sa else [])
             if do_contracts:
@@ -718,7 +715,7 @@ class NewsWatcher:
             res, silent = run("USAspending", usaspending, self.tickers)
             for a in res:
                 consider(_hash("usa|" + a["gid"]), a, silent)
-        if not fast and not self.gov_only:
+        if not fast:
             res, silent = run("FDA", fda_news, self.tickers)
             for it in res:
                 consider(_hash(it["ticker"] + "|fda|" + _norm(it["title"])), {**it, "kind": "news"}, silent)

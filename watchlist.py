@@ -9,8 +9,6 @@ is not visible in the public repo. JSON, for example:
 - search: Google News search terms; match: words a headline must contain to count as being about the company
 - gov:    company names in US federal contract data (USAspending.gov)
 
-The phone has no WATCHLIST; it gets only GOV_NAMES (JSON {"ABC": ["ABC Corp"]}) for the USAspending.gov check.
-
 Without WATCHLIST the older TICKERS / THRESHOLD_PCT / NEWS_EXCLUDE / NEWS_IMPORTANT_ONLY variables are used.
 """
 
@@ -37,10 +35,5 @@ NEWS_EXCLUDE = {t.upper() for t in CFG.get("news_exclude", [])} if CFG else set(
 IMPORTANT_ONLY = {t.upper() for t in CFG.get("important_only", [])} if CFG else set(_csv("NEWS_IMPORTANT_ONLY"))
 COMPANIES = {t: {"q": s.get("search") or [t], "match": s.get("match") or [t]} for t, s in STOCKS.items()}
 GOV_NAMES = {t: s["gov"] for t, s in STOCKS.items() if s.get("gov")}
-if not GOV_NAMES and os.environ.get("GOV_NAMES", "").strip():  # phone: only the federal-contract names, no stocks
-    try:
-        GOV_NAMES = {k.upper(): list(v) for k, v in json.loads(os.environ["GOV_NAMES"]).items() if v}
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        ERROR = ERROR or "GOV_NAMES is not valid JSON"
 TIMEZONE = CFG.get("timezone") or os.environ.get("STATUS_TZ") or "UTC"
 STATUS_TIME = CFG.get("status_time") or os.environ.get("STATUS_TIME") or "08:00"
