@@ -33,12 +33,18 @@ jobs:
 
       - name: Load saved state (encrypted, so the public repo doesn't show what's watched)
         env:
-          STATE_PASS: ${{ secrets.PRICEHINIO_ALERT }}
+          STATE_KEY: ${{ secrets.STATE_KEY }}         # own random key for the saved state
+          OLD_PASS: ${{ secrets.PRICEHINIO_ALERT }}   # bot token: the old key, still accepted when reading
         run: |
-          if [ -f state.enc ]; then
-            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a -pass env:STATE_PASS -in state.enc -out state.json \
-              || { echo "Saved state could not be decrypted (bot token changed?); starting fresh"; rm -f state.json; }
-          fi
+          [ -f state.enc ] || exit 0
+          for K in STATE_KEY OLD_PASS; do
+            [ -n "${!K}" ] || continue
+            if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a -pass "env:$K" -in state.enc -out state.json 2>/dev/null \
+               && python3 -c "import json,sys; json.load(open('state.json'))" 2>/dev/null; then
+              echo "Saved state loaded (key: $K)"; exit 0
+            fi
+          done
+          echo "Saved state could not be decrypted (key changed?); starting fresh"; rm -f state.json
 
       - name: Watch prices + news (~5h45m)
         env:
@@ -69,9 +75,11 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}   # only this step gets repo-write access
-          STATE_PASS: ${{ secrets.PRICEHINIO_ALERT }}
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+          OLD_PASS: ${{ secrets.PRICEHINIO_ALERT }}
         run: |
           [ -f state.json ] || exit 0
+          STATE_PASS="${STATE_KEY:-$OLD_PASS}"; export STATE_PASS   # new key once the secret exists
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -a -pass env:STATE_PASS -in state.json -out state.enc
           git config user.name "price-alert-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
