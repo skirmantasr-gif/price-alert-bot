@@ -178,6 +178,22 @@ class Exchanges(unittest.TestCase):
         self.assertIn("ZTX.AX", out[0][0])
         self.assertIn("Australia", out[0][0])
 
+    def test_pdf_reader_runs_in_a_separate_process_with_a_time_limit(self):
+        with mock.patch.object(c, "_PDF_CHILD", "while True: pass"), mock.patch.object(c, "PDF_SECONDS", 1):
+            with self.assertRaises(TimeoutError):
+                c._read_pdf_guarded(b"%PDF-1.7", 3)
+        with mock.patch.object(c, "_PDF_CHILD", "import sys; sys.exit(3)"):
+            with self.assertRaises(RuntimeError):
+                c._read_pdf_guarded(b"%PDF-1.7", 3)
+        with mock.patch.object(c, "_PDF_CHILD", "import sys, json; print(json.dumps(sys.stdin.buffer.read().decode()))"):
+            self.assertEqual(c._read_pdf_guarded(b"%PDF-1.7 text", 3), "%PDF-1.7 text")
+
+    def test_hanging_pdf_is_skipped_not_fatal(self):
+        with mock.patch.dict("sys.modules", {"pypdf": mock.MagicMock()}), \
+                mock.patch.object(c, "_get", lambda url, timeout=60: b"%PDF-1.7 x"), \
+                mock.patch.object(c, "_PDF_CHILD", "while True: pass"), mock.patch.object(c, "PDF_SECONDS", 1):
+            self.assertEqual(c.pdf_text("https://x/1.pdf"), "")
+
     def test_pdf_text_without_pypdf_is_empty(self):
         with mock.patch.dict("sys.modules", {"pypdf": None}):
             self.assertEqual(c.pdf_text("https://x/1.pdf"), "")

@@ -15,31 +15,31 @@ DAY = (2026, 11, 9)
 
 class WrongCompany(unittest.TestCase):
     def setUp(self):
-        p = mock.patch.dict(news.COMPANIES, {"SLS": {"q": ['"SELLAS"'], "match": ["SELLAS", "SLS"]}})
+        p = mock.patch.dict(news.COMPANIES, {"ACMB": {"q": ['"Acmebio"'], "match": ["Acmebio", "ACMB"]}})
         p.start()
         self.addCleanup(p.stop)
 
     def test_same_symbol_on_another_exchange_is_not_ours(self):
-        self.assertFalse(news._matches("Solaris Resources (TSX: SLS) receives final tranche", "SLS"))
-        self.assertFalse(news._matches("Solaris Resources SLS.TO receives final tranche", "SLS"))
-        self.assertTrue(news._matches("SELLAS (SLS) reports Phase 3 data", "SLS"))
-        self.assertTrue(news._matches("SLS shares jump after trial update", "SLS"))
+        self.assertFalse(news._matches("Northrock Mining (TSX: ACMB) receives final tranche", "ACMB"))
+        self.assertFalse(news._matches("Northrock Mining ACMB.TO receives final tranche", "ACMB"))
+        self.assertTrue(news._matches("Acmebio (ACMB) reports Phase 3 data", "ACMB"))
+        self.assertTrue(news._matches("ACMB shares jump after trial update", "ACMB"))
 
     def test_funding_tranche_is_not_a_contract_win(self):
-        ok, _, _ = news.contract_info("Solaris Resources Receives Final $50 Million Tranche of $200 Million Funding Package")
+        ok, _, _ = news.contract_info("Northrock Mining Receives Final $50 Million Tranche of $200 Million Funding Package")
         self.assertFalse(ok)
         ok, gov, amt = news.contract_info("Zentrox receives $40 million BARDA funding award")
         self.assertTrue(ok and gov and amt == 40e6)
 
     def test_roundup_of_many_stocks_skipped(self):
         it = {"id": 1, "title": "Dole Posts Downbeat Q3 Results, Joins NVIDIA And Other Big Stocks Moving Lower",
-              "desc": "", "link": "x", "date": None, "symbols": ["DOLE", "NVDA", "GLXY", "AAPL", "TSLA"],
+              "desc": "", "link": "x", "date": None, "symbols": ["DOLE", "NVDA", "GLWX", "AAPL", "TSLA"],
               "source": "Benzinga"}
-        single = {**it, "id": 2, "title": "Galaxy Digital prices offering", "symbols": ["GLXY"]}
-        with mock.patch.dict(news.COMPANIES, {"GLXY": {"q": ["GLXY"], "match": ["Galaxy Digital", "GLXY"]}}), \
+        single = {**it, "id": 2, "title": "Galactic Widgets prices offering", "symbols": ["GLWX"]}
+        with mock.patch.dict(news.COMPANIES, {"GLWX": {"q": ["GLWX"], "match": ["Galactic Widgets", "GLWX"]}}), \
                 mock.patch.object(news.alpaca, "recent", lambda: [it, single]):
-            got = [x["title"] for x in news.alpaca_news(["GLXY"])]
-        self.assertEqual(got, ["Galaxy Digital prices offering"])
+            got = [x["title"] for x in news.alpaca_news(["GLWX"])]
+        self.assertEqual(got, ["Galactic Widgets prices offering"])
 
 
 class Quiet(unittest.TestCase):
@@ -96,20 +96,20 @@ class ContractDupes(unittest.TestCase):
 
 class Outlook(unittest.TestCase):
     def test_tiny_moves_are_not_judged(self):
-        prev = {"t": ny(*DAY, 13), "calls": {"CRTO": ["up", "low", 16.50]}}
-        line = insights.recap(prev, {"CRTO": 16.52}, ny(*DAY, 14))
+        prev = {"t": ny(*DAY, 13), "calls": {"CRTX": ["up", "low", 16.50]}}
+        line = insights.recap(prev, {"CRTX": 16.52}, ny(*DAY, 14))
         self.assertIn("➖", line)
         self.assertNotIn("right", line)
 
     def test_call_wrong_twice_is_dropped(self):
         state = {}
-        prev = {"t": 0, "calls": {"GLXY": ["down", "low", 14.0]}}
-        insights.track_misses(state, prev, {"GLXY": 14.5}, "2026-11-09")
-        miss = insights.track_misses(state, prev, {"GLXY": 14.5}, "2026-11-09")
-        self.assertEqual(miss["GLXY"], ["2026-11-09", "down", 2])
+        prev = {"t": 0, "calls": {"GLWX": ["down", "low", 14.0]}}
+        insights.track_misses(state, prev, {"GLWX": 14.5}, "2026-11-09")
+        miss = insights.track_misses(state, prev, {"GLWX": 14.5}, "2026-11-09")
+        self.assertEqual(miss["GLWX"], ["2026-11-09", "down", 2])
         self.assertEqual(insights.track_misses(state, None, {}, "2026-11-10"), {})  # new day, fresh start
-        insights.track_misses(state, prev, {"GLXY": 14.5}, "2026-11-10")
-        self.assertNotIn("GLXY", insights.track_misses(state, prev, {"GLXY": 13.5}, "2026-11-10"))  # right -> reset
+        insights.track_misses(state, prev, {"GLWX": 14.5}, "2026-11-10")
+        self.assertNotIn("GLWX", insights.track_misses(state, prev, {"GLWX": 13.5}, "2026-11-10"))  # right -> reset
 
 
 class OpenHold(unittest.TestCase):
