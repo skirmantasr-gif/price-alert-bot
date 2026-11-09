@@ -266,6 +266,19 @@ class OldNews(unittest.TestCase):
         self.assertIn("⏰ Old news", old)
         self.assertTrue(is_quiet(old))
 
+    def test_preview_headline_is_quiet(self):
+        from extras import is_quiet
+        w = news.NewsWatcher(["ZNTX"], lambda *a: True)
+        for t in ("Zentrox Q3 2026 Earnings Preview", "Zentrox set to report earnings: what to expect",
+                  "Zentrox - What Are Researchers Saying About This Stock"):
+            msg = w._format({"kind": "news", "ticker": "ZNTX", "title": t, "link": "https://x",
+                             "source": "Some Site", "date": NOW})
+            self.assertTrue(msg.startswith("📰"), t)
+            self.assertTrue(is_quiet(msg))
+        real = w._format({"kind": "news", "ticker": "ZNTX", "title": "Zentrox Q3 earnings beat, raises guidance",
+                          "link": "https://x", "source": "Some Site", "date": NOW})
+        self.assertTrue(real.startswith("🚨"))
+
     def test_stale_skips_go_into_memory(self):
         out, st = [], {"_news": {"init": ["Yahoo:ZNTX"]}}
         self.run_check(self.watcher(out), st, [headline("Zentrox Wins Large Navy Order For Drones",

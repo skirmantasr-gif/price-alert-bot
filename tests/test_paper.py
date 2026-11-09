@@ -246,5 +246,37 @@ class Timing(unittest.TestCase):
         self.assertEqual(state["_paper"]["v"], paper.VERSION)
 
 
+class Voids(unittest.TestCase):
+    def test_voided_trade_removed_once_with_money_back(self):
+        st = {"_paper": paper.new_state(1000), "_learn": {"p": [{"t": 1500, "tk": "AAA"}, {"t": 1500, "tk": "BBB"}]}}
+        pfs = list(st["_paper"]["pf"].values())
+        pfs[0]["cash"] -= 10
+        pfs[0]["open"]["AAA"] = {"p0": 5.0, "eur": 9.985, "cost": 10, "t": 1600, "src": "contract"}
+        pfs[1]["cash"] -= 15
+        pfs[1]["pending"]["AAA"] = {"t": 1500, "src": "contract", "c": "high", "eur": 15}
+        pfs[1]["open"]["BBB"] = {"p0": 5.0, "eur": 9.985, "cost": 10, "t": 1600, "src": "news"}
+        with mock.patch.object(paper, "VOIDS", [("v1", paper._tkh("AAA"), 1000, 2000, "wrong alert")]):
+            self.assertEqual(paper.apply_voids(st, now=3000), 2)
+            self.assertEqual(paper.apply_voids(st, now=3100), 0)  # only once
+        self.assertNotIn("AAA", pfs[0]["open"])
+        self.assertNotIn("AAA", pfs[1]["pending"])
+        self.assertIn("BBB", pfs[1]["open"])
+        self.assertAlmostEqual(pfs[0]["cash"], paper.START_EUR)
+        self.assertAlmostEqual(pfs[1]["cash"], paper.START_EUR - 15 + 15)
+        self.assertEqual([x["tk"] for x in st["_learn"]["p"]], ["BBB"])
+        self.assertEqual(st["_paper"]["voided"], ["v1"])
+        lines = [x for _, x in paper.trade_lines(st["_paper"], 0, short=False)]
+        self.assertTrue(any(x.startswith("↩️ Trade removed") for x in lines))
+
+    def test_void_outside_window_or_unknown_ticker_does_nothing(self):
+        st = {"_paper": paper.new_state(1000)}
+        pf = next(iter(st["_paper"]["pf"].values()))
+        pf["open"]["AAA"] = {"p0": 5.0, "eur": 9.985, "cost": 10, "t": 5000, "src": "news"}
+        with mock.patch.object(paper, "VOIDS", [("v1", paper._tkh("AAA"), 1000, 2000, "x"),
+                                                ("v2", paper._tkh("ZZZ"), 0, 9999, "x")]):
+            self.assertEqual(paper.apply_voids(st, now=3000), 0)
+        self.assertIn("AAA", pf["open"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -320,6 +320,44 @@ class Alerts(unittest.TestCase):
         ok, out, _ = self.handle(item("Zentrox wins IDIQ contract worth up to $300 million"), reading())
         self.assertIn("Ceiling / framework", out[0][0])
 
+    def test_winner_not_the_listed_company_is_skipped(self):
+        ok, out, sent = self.handle(item("Zentrox Science wins $300 million NASA contract"), reading(winner_listed=False))
+        self.assertFalse(ok)
+        self.assertEqual(out, [])
+        ok, out, _ = self.handle(item("Zentrox Science wins $300 million NASA contract"),
+                                 reading(summary="Awarded to Zentrox Science, private firm, not Zentrox Systems"))
+        self.assertFalse(ok)
+        self.assertEqual(out, [])
+
+    def test_second_check_can_reveal_wrong_winner(self):
+        sc, out = scanner()
+        sc.verify = lambda it, r, name: {**r, "winner_listed": False}
+        self.assertFalse(sc.handle(item("Zentrox lands $300 million Army contract"), reading(), [], "d"))
+        self.assertEqual(out, [])
+
+    def test_shared_total_is_never_loud(self):
+        for it, r in ((item("NASA picks Zentrox for $3 billion lunar framework"), reading(amount=3e9, shared=True)),
+                      (item("Zentrox among vendors on $3 billion multiple-award contract"), reading(amount=3e9)),
+                      (item("NASA picks Zentrox for lunar deliveries"), reading(amount=3e9, summary="one of 5 companies selected"))):
+            ok, out, _ = self.handle(it, r)
+            self.assertTrue(ok)
+            text, silent = out[0]
+            self.assertTrue(silent)
+            self.assertFalse(text.startswith("🚨"))
+            self.assertIn("Shared by several winners", text)
+            self.assertIn("Ceiling / framework", text)
+
+    def test_second_check_coverage_marks_shared(self):
+        sc, out = scanner()
+        sc.verify = lambda it, r, name: {**r, "shared": True}
+        sc.handle(item("Zentrox lands $300 million Army contract"), reading(), [], "d")
+        self.assertTrue(out[0][1])
+
+    def test_ai_schema_asks_for_new_fields(self):
+        req = c.SCHEMA["properties"]["items"]["items"]["required"]
+        self.assertIn("winner_listed", req)
+        self.assertIn("shared", req)
+
 
 if __name__ == "__main__":
     unittest.main()
