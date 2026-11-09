@@ -143,7 +143,7 @@ SYSTEM = (
     "- old_event: true if the headline itself shows the event happened more than ~24 hours ago (e.g. a dated "
     "'For: 4 November' filing recap, last week's results, a weekly roundup).\n"
     "- not_about: true if the headline is really about a DIFFERENT company (another firm with the same ticker on "
-    "another exchange, e.g. 'TSX: SLS', or a similar name), or is a market-wide list / roundup of many stocks "
+    "another exchange, e.g. 'TSX: ABC', or a similar name), or is a market-wide list / roundup of many stocks "
     "(e.g. 'X and other big stocks moving lower') that says nothing specific about this company.\n"
     "- minor: true for routine items that rarely move a stock: board/director seats (not CEO/CFO changes), "
     "conference presentations or attendance, law-firm 'investigation' / class-action ads, awards and prizes, "

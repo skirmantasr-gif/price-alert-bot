@@ -141,6 +141,8 @@ USA_PAGES = 3         # 100 awards per page, newest first
 USA_SEEN_DAYS = 30
 EXCHANGE_SECONDS = int(os.environ.get("CONTRACT_EXCHANGE_SECONDS", "120"))  # ASX + HKEX announcements
 EXCHANGE_PDF_MAX = 15_000_000   # bytes; bigger PDFs (annual reports) are not opened
+PDF_SECONDS = 20                # reading one PDF may take at most this long (separate process, killed after)
+PDF_MEMORY = 768 * 2**20        # and use at most this much memory (Linux), so a bad PDF can't freeze the bot
 EXCHANGE_WORD = re.compile(r"(contract|award|tender|\border|selected|preferred|\bwins?\b|winning|secures?|\bbid\b|"
                            r"procurement|panel|supply agreement|framework|project)", re.I)
 EXCHANGE_SKIP = re.compile(r"(connected transaction|share option|share award|court order|orders? of the court|"
@@ -613,6 +615,38 @@ def _pdf_ok():
         return False
 
 
+# Runs in a separate Python process: memory limit, read the PDF from stdin, print the text (JSON) to stdout.
+_PDF_CHILD = r"""
+import io, json, logging, sys
+try:
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (int(sys.argv[2]),) * 2)
+except Exception:
+    pass
+import pypdf
+logging.disable(logging.CRITICAL)
+r = pypdf.PdfReader(io.BytesIO(sys.stdin.buffer.read()))
+if r.is_encrypted:
+    r.decrypt("")
+print(json.dumps(" ".join((p.extract_text() or "") for p in r.pages[:int(sys.argv[1])])))
+"""
+
+
+def _read_pdf_guarded(data, pages):
+    """Parse an untrusted PDF in a child process with a time and memory limit, so a bad file can't freeze or
+    crash the bot (pypdf has had endless-loop / memory bugs, e.g. 7 fixed in 6.21.3/6.21.4)."""
+    import subprocess
+    import sys
+    try:
+        r = subprocess.run([sys.executable, "-I", "-c", _PDF_CHILD, str(pages), str(PDF_MEMORY)], input=data,
+                           capture_output=True, timeout=PDF_SECONDS)
+    except subprocess.TimeoutExpired:
+        raise TimeoutError("PDF took too long")
+    if r.returncode != 0:
+        raise RuntimeError("PDF reader failed")
+    return json.loads(r.stdout.decode())
+
+
 def pdf_text(url, pages=3):
     """Plain text of the first pages of an announcement PDF ('' if pypdf is missing or the file can't be read).
     The PDF is untrusted: size-limited, only a few pages, and the text only ever goes to the AI as data."""
@@ -624,11 +658,7 @@ def pdf_text(url, pages=3):
         data = _get(url, timeout=60)
         if len(data) > EXCHANGE_PDF_MAX or not data.startswith(b"%PDF"):
             return ""
-        logging.getLogger("pypdf").setLevel(logging.ERROR)
-        reader = pypdf.PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
-            reader.decrypt("")  # ASX: copy-protected, no password to open
-        text = " ".join((p.extract_text() or "") for p in reader.pages[:pages])
+        text = _read_pdf_guarded(data, pages)
     except Exception as e:
         log.warning("Contract scan: announcement PDF unreadable (%s)", type(e).__name__)
         return ""

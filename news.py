@@ -262,8 +262,8 @@ def _prune_recent(ns, now=None):
             del rec[t]
 
 
-# A bare ticker right after a foreign exchange name ("TSX: SLS") or with a foreign suffix ("SLS.TO") is another
-# company that shares the symbol (2026-11-09: Solaris Resources TSX:SLS was sent as SELLAS $SLS).
+# A bare ticker right after a foreign exchange name ("TSX: ABC") or with a foreign suffix ("ABC.TO") is another
+# company that shares the symbol (2026-11-09: a Canadian miner's TSX ticker was sent as a US biotech's news).
 FOREIGN_BEFORE = re.compile(r"\b(TSX|TSXV|TSX-V|CSE|NEO|CBOE CA|ASX|LSE|AIM|NSE|BSE|HKEX|SEHK|SGX|JSE|TASE|XETRA|"
                             r"FWB|ETR|Euronext|EPA|BIT|BME|SIX|OSE|TSE|KRX|TWSE|NZX)\s*[:\-]?\s*$", re.I)
 FOREIGN_AFTER = re.compile(r"^\.(TO|V|CN|NE|AX|L|HK|NS|BO|SI|DE|F|PA|MI|AS|SW|T|KS|TW|NZ)\b")

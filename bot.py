@@ -78,7 +78,7 @@ PAPER_CHAT_ID = os.environ.get("PAPER_CHAT_ID", "").strip()    # 🧪 practice p
 CONTRACT_SCAN_SECONDS = int(os.environ.get("CONTRACT_SCAN_SECONDS", "60"))  # one market per scan
 TICKERS = watchlist.TICKERS
 THRESHOLDS = watchlist.THRESHOLDS  # ticker -> fraction, e.g. 0.02
-# First minutes after the 9:30 ET open swing back and forth (2026-11-09: BZUN -2.3% then +2.5% within 3 min):
+# First minutes after the 9:30 ET open swing back and forth (2026-11-09: one stock -2.3% then +2.5% within 3 min):
 # hold ±step alerts that long, unless the move is already OPEN_BIG_X times the step.
 OPEN_HOLD = int(os.environ.get("OPEN_HOLD_MINUTES", "15")) * 60
 OPEN_BIG_X = 3
