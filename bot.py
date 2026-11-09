@@ -52,6 +52,10 @@ except ImportError:  # e.g. an older phone copy without alpaca.py
         recent = staticmethod(lambda: [])
         selftest = staticmethod(lambda: "OFF (alpaca.py missing)")
 import buyout
+try:
+    import movers
+except ImportError:  # phone copy without movers.py
+    movers = None
 import contracts
 import extras
 import insights
@@ -569,6 +573,9 @@ def main():
                            if PAPER_CHAT_ID else ", daily report here)"))
         if HEARTBEAT_ROLE != "phone":
             extra += "\nReal-time news ⚡: " + alpaca.selftest()
+        if movers and HEARTBEAT_ROLE != "phone" and movers.MoversWatch.enabled():
+            extra += "\nWinners & losers 🏆: " + movers.MoversWatch.label() + (
+                " → contracts channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
         if HEARTBEAT_ROLE != "phone" and contracts.ON:
             extra += ("\nContract scan 🏛️: " + (contracts.ContractScanner.label()
                       + (" → separate channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
@@ -593,6 +600,8 @@ def main():
     volume = extras.VolumeWatcher(http_get_json, send_telegram)
     bo_watch = (buyout.BuyoutWatch(lambda text, silent: send_telegram(text, silent, BUYOUT_CHAT_ID))
                 if HEARTBEAT_ROLE != "phone" and BUYOUT_CHAT_ID and buyout.BuyoutWatch.enabled() else None)
+    mv_watch = (movers.MoversWatch(lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID), TICKERS)
+                if movers and HEARTBEAT_ROLE != "phone" and movers.MoversWatch.enabled() else None)
     outlook = (insights.HourlyInsights(TICKERS, LAST_CHART, volume, send_telegram)
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on)
@@ -617,6 +626,8 @@ def main():
             checks.append(("Buyout watch", bo_watch.check))
         if outlook:
             checks.append(("Hourly outlook", outlook.check))
+        if mv_watch:
+            checks.append(("Winners & losers", mv_watch.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if practice:
