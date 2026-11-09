@@ -42,6 +42,7 @@ State: `_paper` in the encrypted state.
 Simulation only — not advice; real fills, spreads and pre/after-hours prices can differ.
 """
 
+import hashlib
 import html
 import logging
 import os
@@ -86,6 +87,64 @@ CONF = {"high": "Expected UP", "medium": "Likely UP", "low": "Possibly UP"}
 # Orders never fill at an alert's own price: they fill at the first regular-session bar that starts at or after
 # the decision (its open) — outside market hours that is the next session's opening price.
 VERSION = 2  # 2 = real-price fills; older saved portfolios (filled at alert prices) are restarted once
+
+
+# Trades bought on an alert that later turned out to be wrong: removed once, money back, not counted.
+# (id, sha256(ticker)[:16] — the public repo shows no tickers —, from, to [UTC epoch of buy/order], reason)
+VOIDS = [
+    ("2026-11-09-a", "f5612b5e835a2784", 1794009600, 1794355200,  # Nov 7 00:00 – Nov 11 00:00 UTC
+     "wrong alert: the company was BUYING land, not winning a contract"),
+]
+
+
+def _tkh(tk):
+    return hashlib.sha256(tk.encode()).hexdigest()[:16]
+
+
+def apply_voids(state, now=None):
+    """Remove voided trades once (open position or waiting order -> cost back to cash; closed -> dropped) and
+    their guesses in the learning log. Returns the number of portfolios changed."""
+    now = now or time.time()
+    st = state.get("_paper")
+    done = st.setdefault("voided", []) if st else []
+    n = 0
+    for vid, h, t0, t1, why in VOIDS:
+        if vid in done:
+            continue
+        tks = set()
+        if st:
+            for pf in st["pf"].values():
+                tks |= set(pf["open"]) | set(pf.get("pending", {})) | {c["tk"] for c in pf["closed"]}
+        tks |= {x.get("tk", "") for x in state.get("_learn", {}).get("p", [])}
+        tk = next((t for t in tks if _tkh(t) == h), None)
+        if tk is None:
+            if st:
+                done.append(vid)
+            continue
+        if st:
+            for pf in st["pf"].values():
+                hit = False
+                pos = pf["open"].get(tk)
+                if pos and t0 <= pos["t"] <= t1:
+                    pf["open"].pop(tk)
+                    pf["cash"] += pos.get("cost", SIZE_EUR)
+                    hit = True
+                o = pf.get("pending", {}).get(tk)
+                if o and t0 <= o.get("t", 0) <= t1:
+                    pf["pending"].pop(tk)
+                    pf["cash"] += o.get("eur", SIZE_EUR)
+                    hit = True
+                before = len(pf["closed"])
+                pf["closed"] = [c for c in pf["closed"] if not (c["tk"] == tk and t0 <= c["t0"] <= t1)]
+                hit |= len(pf["closed"]) != before
+                if hit:
+                    _log(pf, now, a="void", tk=tk, why=why)
+                    n += 1
+            done.append(vid)
+        lp = state.get("_learn", {}).get("p")
+        if lp:
+            lp[:] = [x for x in lp if not (x.get("tk") == tk and t0 <= x.get("t", 0) <= t1)]
+    return n
 
 
 def new_state(now):
@@ -292,6 +351,8 @@ def _line(e, names):
         return (f"🟢 Bought <b>${tk}</b> €{e.get('eur', SIZE_EUR):.0f} at {e['p']:,.4g}{_when(e)}"
                 f"{' — next opening price' if e.get('late') else ''} ({SRC.get(e['src'], e['src'])}, "
                 f"{CONF.get(e['c'], e['c'])}) {names}")
+    if e["a"] == "void":
+        return f"↩️ Trade removed <b>${tk}</b> ({html.escape(e['why'])}) — money back, not counted {names}"
     if e["a"] == "cancel":
         return f"✖️ Order cancelled <b>${tk}</b> ({html.escape(e['why'])}) {names}"
     return (f"{'✅' if e['ret'] > 0 else '❌'} Sold <b>${tk}</b> {_pct(e['ret'])} at {e['p']:,.4g}{_when(e)} "
@@ -460,6 +521,10 @@ class Tracker:
         if state.get("_paper", {}).get("v") != VERSION:
             state["_paper"] = new_state(time.time())
         _state_ref = state["_paper"]
+        try:
+            apply_voids(state)
+        except Exception as e:
+            log.warning("Practice portfolio: removing a voided trade failed (%s)", type(e).__name__)
 
     def data(self, tk):
         hit = self.cache.get(tk)

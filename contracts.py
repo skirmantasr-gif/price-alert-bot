@@ -122,6 +122,14 @@ CEILING_RE = re.compile(r"(\bIDIQ\b|indefinite[- ]delivery|\bceiling\b|\bup to\b
                         r"blanket purchase|\bBPA\b|multiple[- ]award|framework|rate contract|"
                         r"Rahmenvertrag|accord[- ]cadre|raamovereenkomst|ramavtal|共同供應契約|共契|框架|入围|入圍|"
                         r"单价合同|上限金額|上限额)", re.I)
+# The stated total is split between several winners (checked in headline + snippet + AI summary + extra context)
+SHARED_RE = re.compile(r"(multiple[- ]award|multi[- ]award|several (companies|vendors|suppliers|firms)|"
+                       r"\b(one of|among) (the )?(\d+|two|three|four|five|six|seven|eight|nine|ten|several|multiple) "
+                       r"(companies|vendors|suppliers|firms|winners|awardees|contractors)|vendors? (pool|selected)|"
+                       r"共同供應契約|共契|联合中标|聯合中標)", re.I)
+# The AI's own summary says the winner is a different / private company -> not this stock
+NOT_WINNER_RE = re.compile(r"(\bprivate(ly[- ]held)? (firm|company|business)\b|\bnot (publicly )?listed\b|\bunlisted\b|"
+                           r"\bunrelated to\b|\bno relation\b|\bnot affiliated\b)", re.I)
 WIRE_SECONDS = int(os.environ.get("CONTRACT_WIRE_SECONDS", "120"))   # PR Newswire live feed
 US_SECONDS = int(os.environ.get("CONTRACT_US_SECONDS", "300"))       # US Google News search
 # USAspending.gov: every NEW US federal contract award (any company), official data. Civilian agencies appear ~2-5
@@ -226,7 +234,12 @@ For each item return:
 - public_buyer: true if the buyer is a government, military, public agency, municipality, public hospital,
   state-owned company (e.g. State Grid, national railways) or international public body (ESA, NATO, EU).
 - buyer: short buyer name in English ("" if not stated).
-- summary: what the contract is for, in English, max 12 words, no links."""
+- summary: what the contract is for, in English, max 12 words, no links.
+- winner_listed: true only if the winner named in the text IS the listed company in "company" or a known
+  subsidiary of it. False if the winner is private / unlisted or merely has a similar name (e.g. "Arrow Science
+  and Technology" is NOT Arrow Electronics). Never put a similarly named listed company in "company".
+- shared: true if the stated total is shared by several winning companies (multiple-award contract, several
+  vendors selected, framework / panel with more than one supplier), so this company's own share is unknown."""
 
 SCHEMA = {
     "type": "object",
@@ -243,9 +256,11 @@ SCHEMA = {
             "public_buyer": {"type": "boolean"},
             "buyer": {"type": "string"},
             "summary": {"type": "string"},
+            "winner_listed": {"type": "boolean"},
+            "shared": {"type": "boolean"},
         },
         "required": ["id", "is_win", "company", "ticker_hint", "amount", "currency", "kind",
-                     "public_buyer", "buyer", "summary"],
+                     "public_buyer", "buyer", "summary", "winner_listed", "shared"],
         "additionalProperties": False}}},
     "required": ["items"],
     "additionalProperties": False,
@@ -896,6 +911,9 @@ class ContractScanner:
     def handle(self, it, r, sent, today):
         if not r["is_win"] or not r["company"].strip() or r["amount"] <= 0:
             return False
+        if r.get("winner_listed") is False or NOT_WINNER_RE.search(r.get("summary") or ""):
+            log.info("Contract scan: winner is not the listed company; skipped")
+            return False
         if GOV_ONLY and not r["public_buyer"]:
             return False
         try:
@@ -932,11 +950,18 @@ class ContractScanner:
             if r is None:
                 log.info("Contract scan: candidate dropped after second check")
                 return False
+            if r.get("winner_listed") is False or NOT_WINNER_RE.search(r.get("summary") or ""):
+                log.info("Contract scan: winner is not the listed company (second check); skipped")
+                return False
             usd2 = r["amount"] * self.yahoo.fx_rate(r["currency"]) if r["amount"] > 0 else usd
             if usd2 >= MIN_USD:
                 usd = usd2
             ratio = usd / cap
             big = ratio >= (BIG_NEW if r["kind"] == "new" else BIG_OTHER)
+        if r.get("shared") or SHARED_RE.search(f"{it['title']} {it.get('desc', '')} {r.get('summary') or ''}"):
+            # a total split between several winners says nothing about this company's own share: never 🚨
+            r = {**r, "shared": True, "kind": "ceiling" if r["kind"] == "new" else r["kind"]}
+            big = False
         now = datetime.now(timezone.utc)
         age_h = (now - it["date"]).total_seconds() / 3600 if it.get("date") else None
         first, first_src = self.first_seen(it, r, name)
@@ -1036,6 +1061,8 @@ class ContractScanner:
         ctx = " | ".join(extra)
         if CEILING_RE.search(ctx) and r["kind"] == "new":
             r = {**r, "kind": "ceiling"}
+        if SHARED_RE.search(ctx):
+            r = {**r, "shared": True}
         if not extra:
             return r
         try:
@@ -1050,6 +1077,8 @@ class ContractScanner:
             return None
         if r["kind"] == "ceiling" and r2["kind"] == "new":
             r2 = {**r2, "kind": "ceiling"}  # a ceiling word was found: never upgrade back
+        if r.get("shared"):
+            r2 = {**r2, "shared": True}  # several winners found in the coverage: keep that
         return r2
 
     def format(self, it, r, sym, name, usd, cap, ratio, big):
@@ -1061,6 +1090,9 @@ class ContractScanner:
         lines = [f"{'🚨' if big else ''}🏛️ <b>{html.escape(name)}</b> ({html.escape(sym)} · {market} · cap {fmt_usd(cap)})",
                  f"Won <b>{fmt_usd(usd)}</b>{orig} — <b>{ratio * 100:.0f}% of market cap</b>",
                  f"{kind}" + (f" · Buyer: {html.escape(r['buyer'][:80])}" if r["buyer"] else "")]
+        if r.get("shared"):
+            lines.append("👥 Shared by several winners — this company's own share is unknown (the % above is the "
+                         "whole total, not its part)")
         if r["summary"]:
             lines.append(html.escape(r["summary"][:120]))
         try:

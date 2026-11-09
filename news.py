@@ -107,6 +107,10 @@ IMPORTANT = re.compile(r"\b(FDA|approv\w*|PDUFA|CRL|complete response|BLA|NDA|sN
                        r"delist\w*|halt\w*|bankrupt\w*|chapter 11|lawsuit|investigation|subpoena|recall|"
                        r"CEO|CFO|resign\w*|appoint\w*|steps down|activist|stake|13D|short report|"
                        r"dividend|buyback|repurchase|contract|award\w*|record)\b", re.I)
+# Look-ahead / opinion pieces: they mention "earnings" etc. but carry no new fact -> 📰 (quiet), not 🚨
+PREVIEW = re.compile(r"\b(preview|what to expect|ahead of|expectations?|(set|scheduled|expected) to report|"
+                     r"to report (q\d|earnings|results)|should you|is it time|what (are )?(analysts|researchers) (are )?saying|"
+                     r"things to watch|what to watch|earnings date)\b", re.I)
 
 FORM_NAMES = {
     "8-K": "8-K (material event)", "6-K": "6-K (foreign issuer report)", "10-Q": "10-Q (quarterly report)",
@@ -894,7 +898,8 @@ class NewsWatcher:
             return "\n".join(lines)
         c = it.get("contract")
         big = c is not None and c >= CONTRACT_MIN
-        icon = ("🚨" if big or IMPORTANT.search(it["title"]) else "📰") + ("🏛️" if c is not None else "")
+        loud = IMPORTANT.search(it["title"]) and not PREVIEW.search(it["title"])
+        icon = ("🚨" if big or loud else "📰") + ("🏛️" if c is not None else "")
         srcs = it.get("sources") or [it.get("source", "")]
         src = html.escape(srcs[0]) + (f" +{len(srcs) - 1} more" if len(srcs) > 1 else "")
         extra = ""
