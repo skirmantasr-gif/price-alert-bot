@@ -389,11 +389,12 @@ class Heartbeat:
     """GitHub writes its heartbeat into the bot's description, the phone into the bot's short description
     (both use the same Telegram bot), and each side warns when the other has gone quiet."""
 
-    def __init__(self, role, api, send, thirdparty_ok=lambda: True):
+    def __init__(self, role, api, send, thirdparty_ok=lambda: True, daily_extra=None):
         self.role = role
         self.api = api
         self.send = send
         self.thirdparty_ok = thirdparty_ok
+        self.daily_extra = daily_extra  # state -> list of extra lines for the ☀️ daily check (e.g. 🌡️ market mood)
         self.last = 0
 
     def check(self, state):
@@ -461,6 +462,11 @@ class Heartbeat:
             names = [("price", "price moves"), ("news", "news"), ("sec", "SEC filings"), ("halts", "halts"),
                      ("volume", "volume alerts")]
             lines.append("Yesterday: " + ", ".join(f"{d.get(k, 0)} {n}" for k, n in names))
+        if self.daily_extra:
+            try:
+                lines += [x for x in self.daily_extra(state) if x]
+            except Exception as e:
+                log.warning("Daily check extra lines failed: %s", type(e).__name__)
         up = calendar_upcoming(state)
         if up:
             lines.append("📅 <b>Next 14 days</b>")

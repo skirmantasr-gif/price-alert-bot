@@ -56,6 +56,10 @@ try:
     import movers
 except ImportError:  # phone copy without movers.py
     movers = None
+try:
+    import mood
+except ImportError:  # phone copy without mood.py
+    mood = None
 import contracts
 import extras
 import insights
@@ -604,7 +608,9 @@ def main():
                 if movers and HEARTBEAT_ROLE != "phone" and movers.MoversWatch.enabled() else None)
     outlook = (insights.HourlyInsights(TICKERS, LAST_CHART, volume, send_telegram)
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
-    heartbeat = extras.Heartbeat(HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on)
+    heartbeat = extras.Heartbeat(
+        HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on,
+        daily_extra=(lambda st: [mood.line(mood.get(st, http_get_json))]) if mood and HEARTBEAT_ROLE != "phone" else None)
     reviewer = None
     if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
         learn.CHARTS = LAST_CHART

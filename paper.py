@@ -5,6 +5,8 @@ Portfolios (each starts with €100, run side by side on the same alerts):
   strong   💪 "Expected to go UP" calls (high confidence) + 🚨 contract wins
   likely   👍 "Likely UP" or stronger (medium + high), news / SEC / contracts
   outlook  🧭 hourly outlook "May go UP" calls (medium + high)
+  calm     🌡️ same as 👍 Likely+, but skips buys while the 🌡️ market mood (mood.py) is defensive — started as an
+           exact copy of 👍 (2026-11-10), so the difference between the two shows whether the mood filter helps
   + benchmark: the same €100 in the S&P 500 (SPY) from the start date
 
 Rules (same for all):
@@ -30,7 +32,7 @@ Rules (same for all):
 
 Report numbers: value vs the S&P 500, and per portfolio (once trades are closed) win rate, average trade,
 "vs S&P" = each trade's return minus the S&P 500's return over the same days (did the alert beat the market?),
-profit factor (gains ÷ losses), max drawdown, and a warning while there are fewer than 30 closed trades.
+profit factor (gains ÷ losses), worst drop from the top (max drawdown, also for the S&P), and a warning while there are fewer than 30 closed trades.
 
 Signals come from learn.record() (every up/down call the bot sends, with the price at that moment).
 Own channel (PAPER_CHAT_ID): a broker-style account statement right after the US open (~09:36 New York) and
@@ -42,6 +44,7 @@ State: `_paper` in the encrypted state.
 Simulation only — not advice; real fills, spreads and pre/after-hours prices can differ.
 """
 
+import copy
 import hashlib
 import html
 import logging
@@ -50,6 +53,11 @@ import time
 from datetime import datetime, timedelta
 
 log = logging.getLogger("bot")
+
+try:
+    import mood
+except ImportError:  # pragma: no cover  (copy without mood.py)
+    mood = None
 
 ON = os.environ.get("PAPER", "true").lower() == "true"
 START_EUR = 100.0
@@ -76,7 +84,11 @@ PORTFOLIOS = {
     "strong": ("💪 Strong calls", lambda s: s["d"] == "up" and s["c"] == "high" and s["src"] != "outlook"),
     "likely": ("👍 Likely+ calls", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] != "outlook"),
     "outlook": ("🧭 Hourly outlook", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] == "outlook"),
+    "calm": ("🌡️ Mood-filtered", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] != "outlook"
+             and s.get("mood") != "defensive"),
 }
+CLONE = {"calm": "likely"}  # a portfolio added later starts as an exact copy of this one (fair comparison)
+MOOD_GATED = {"calm": "likely"}  # buys skipped only because of the mood are logged ("⏭️ Skipped")
 SRC = {"news": "news", "sec": "SEC", "gov": "US contract", "contract": "contract win", "outlook": "outlook"}
 CONF = {"high": "Expected UP", "medium": "Likely UP", "low": "Possibly UP"}
 
@@ -147,6 +159,16 @@ def apply_voids(state, now=None):
     return n
 
 
+def add_portfolios(st, now=None):
+    """Portfolios added after the start: an exact copy of their CLONE source (same cash, holdings, history),
+    so from today the only difference is the new rule. Others start fresh with €100."""
+    for key in PORTFOLIOS:
+        if key not in st["pf"]:
+            src = st["pf"].get(CLONE.get(key))
+            st["pf"][key] = copy.deepcopy(src) if src else _pf()
+            st.setdefault("added", {})[key] = int(now or time.time())
+
+
 def new_state(now):
     return {"v": VERSION, "since": int(now), "pf": {k: _pf() for k in PORTFOLIOS}}
 
@@ -212,6 +234,8 @@ def _sell(pf, tk, price, at, now, why, data=None):
 def on_signal(st, sig, now=None):
     """sig: {"tk","src","d","c","p0"} (learn.record format). Places orders in every portfolio; they fill in step()."""
     now = now or time.time()
+    sig = dict(sig, mood=sig.get("mood", st.get("mood")))
+    add_portfolios(st, now)  # a new portfolio must start as a copy, never as an empty one
     for key, (_, rule) in PORTFOLIOS.items():
         pf = st["pf"].setdefault(key, _pf())
         pf.setdefault("pending", {})
@@ -230,6 +254,9 @@ def on_signal(st, sig, now=None):
                 pf["cash"] -= size  # reserved until the order fills
                 pf["pending"][tk] = {"t": int(now), "src": sig["src"], "c": sig["c"], "alert_p": sig.get("p0"), "eur": size}
                 _log(pf, now, a="order", tk=tk, src=sig["src"], c=sig["c"], eur=size)
+            elif (key in MOOD_GATED and not rule(sig) and PORTFOLIOS[MOOD_GATED[key]][1](sig)
+                  and tk not in pf["open"] and tk not in pf["pending"]):
+                _log(pf, now, a="skip", tk=tk, why="market mood defensive")
 
 
 def step(st, now, data):
@@ -351,6 +378,8 @@ def _line(e, names):
         return (f"🟢 Bought <b>${tk}</b> €{e.get('eur', SIZE_EUR):.0f} at {e['p']:,.4g}{_when(e)}"
                 f"{' — next opening price' if e.get('late') else ''} ({SRC.get(e['src'], e['src'])}, "
                 f"{CONF.get(e['c'], e['c'])}) {names}")
+    if e["a"] == "skip":
+        return f"⏭️ Skipped <b>${tk}</b> ({html.escape(e['why'])}) {names}"
     if e["a"] == "void":
         return f"↩️ Trade removed <b>${tk}</b> ({html.escape(e['why'])}) — money back, not counted {names}"
     if e["a"] == "cancel":
@@ -380,26 +409,41 @@ def stats(pf):
     loss = [x["ret"] for x in c if x["ret"] <= 0]
     pfac = sum(wins) / -sum(loss) if loss and sum(loss) < 0 else None
     vs = [x["vs"] for x in c if x.get("vs") is not None]
-    eq = pf.get("eq") or []
-    mdd, peak = 0.0, START_EUR
-    for v in eq:
-        peak = max(peak, v)
-        mdd = min(mdd, v / peak - 1)
     out = (f"   {len(wins)}/{len(c)} won · avg trade {sum(x['ret'] for x in c) / len(c) * 100:+.1f}%"
            + (f" · vs S&P {sum(vs) / len(vs) * 100:+.1f}%/trade" if vs else "")
-           + (f" · profit factor {pfac:.2f}" if pfac is not None else "")
-           + (f" · max drawdown {mdd * 100:.1f}%" if eq else ""))
+           + (f" · profit factor {pfac:.2f}" if pfac is not None else ""))
     if len(c) < 30:
         out += f" · <i>only {len(c)} closed trades — too early to judge (30+ needed)</i>"
     return out
 
 
+def drawdown(eq, start=START_EUR):
+    """Worst drop from a previous top (≤ 0, fraction) over an equity history; None with < 2 points."""
+    if len(eq or []) < 2:
+        return None
+    mdd, peak = 0.0, start
+    for v in eq:
+        peak = max(peak, v)
+        mdd = min(mdd, v / peak - 1)
+    return mdd
+
+
+def _dd(eq, start=START_EUR):
+    d = drawdown(eq, start)
+    return f" · 📉 worst drop {round(d * 100, 1) + 0.0:.1f}%" if d is not None else ""  # + 0.0: no "-0.0"
+
+
 def snapshot(st, now, data):
-    """Equity history for max drawdown (one point per hourly check / report)."""
+    """Equity history for the worst drop (one point per hourly check / report), also for the S&P benchmark."""
     for pf in st["pf"].values():
         eq = pf.setdefault("eq", [])
         eq.append(round(value(pf, now, data), 3))
         del eq[:-1000]
+    bv = _bench(st, now, data)
+    if bv:
+        be = st.setdefault("bench_eq", [])
+        be.append(round(bv, 3))
+        del be[:-1000]
 
 
 def report(st, now, data, title):
@@ -412,12 +456,15 @@ def report(st, now, data, title):
         wait = len(pf.get("pending", {}))
         lines.append(f"{name}: <b>€{v:.2f}</b> ({(v / START_EUR - 1) * 100:+.1f}%) · {len(pf['open'])} open"
                      + (f" · {wait} waiting for the open" if wait else "") + f" · {len(pf['closed'])} closed"
-                     + (f" ({won} won)" if pf["closed"] else ""))
+                     + (f" ({won} won)" if pf["closed"] else "") + _dd(pf.get("eq")))
         if stats(pf):
             lines.append(stats(pf))
     bv = _bench(st, now, data)
     if bv:
-        lines.append(f"📊 S&P 500 (SPY): €{bv:.2f} ({(bv / START_EUR - 1) * 100:+.1f}%) — the number to beat")
+        lines.append(f"📊 S&P 500 (SPY): €{bv:.2f} ({(bv / START_EUR - 1) * 100:+.1f}%){_dd(st.get('bench_eq'), START_EUR * (1 - FEE))}"
+                     " — the number to beat")
+    if st.get("mood_line"):
+        lines.append(st["mood_line"])
     tl = trade_lines(st, now - 86400)
     if tl:
         lines.append("<b>Last 24h:</b>")
@@ -426,7 +473,8 @@ def report(st, now, data, title):
                  f"no buy if the price is already {CHASE * 100:.0f}%+ above the alert; real market prices only (outside market hours: "
                  f"the next opening price) minus an estimated spread; sold live (checked every 5 min) by the profit lock "
                  f"(from +{TRAIL_START * 100:.0f}%, a {TRAIL * 100:.0f}% drop from the high), "
-                 f"at −8% / +15%, or on a DOWN call; no time limit; 0.15% fee each way; currency moves ignored.</i>")
+                 f"at −8% / +15%, or on a DOWN call; no time limit; 0.15% fee each way; currency moves ignored. "
+                 f"🌡️ Mood-filtered = 👍 but no new buys while the market mood is defensive.</i>")
     return "\n".join(lines)
 
 
@@ -460,7 +508,7 @@ def account(st, key, now, data):
     total = cash + reserved + stock_val
     realized = sum(c["eur"] for c in pf["closed"])
     invested = sum(p.get("cost", SIZE_EUR) for p in pf["open"].values())
-    head = (f"{name}: <b>€{total:.2f}</b> ({_pct(total / START_EUR - 1)})\n"
+    head = (f"{name}: <b>€{total:.2f}</b> ({_pct(total / START_EUR - 1)}){_dd(pf.get('eq'))}\n"
             f"   💵 Free cash €{cash:.2f}" + (f" · ⏳ reserved €{reserved:.0f}" if reserved else "")
             + (f" · 📈 in stocks €{stock_val:.2f}" if pf["open"] else "") + (f" (invested €{invested:.0f}, {stock_val - invested:+.2f})" if invested else "")
             + (f"\n   ✔️ Closed trades: {len(pf['closed'])}, profit {realized:+.2f} €" if pf["closed"] else ""))
@@ -521,6 +569,7 @@ class Tracker:
         if state.get("_paper", {}).get("v") != VERSION:
             state["_paper"] = new_state(time.time())
         _state_ref = state["_paper"]
+        add_portfolios(_state_ref)
         try:
             apply_voids(state)
         except Exception as e:
@@ -578,7 +627,10 @@ class Tracker:
             parts.append(txt)
         bv = _bench(st, now, self.data)
         if bv:
-            parts.append(f"📊 Same €100 in the S&P 500: <b>€{bv:.2f}</b> ({(bv / START_EUR - 1) * 100:+.1f}%) — the number to beat")
+            parts.append(f"📊 Same €100 in the S&P 500: <b>€{bv:.2f}</b> ({(bv / START_EUR - 1) * 100:+.1f}%)"
+                         f"{_dd(st.get('bench_eq'), START_EUR * (1 - FEE))} — the number to beat")
+        if st.get("mood_line"):
+            parts.append(st["mood_line"])
         if new:
             tl = [x for _, x in new[:10]] + ([f"… and {len(new) - 10} more"] if len(new) > 10 else [])
             parts.append("<b>Trades since the last statement:</b>\n" + "\n".join(tl))
@@ -595,6 +647,12 @@ class Tracker:
         st = state["_paper"]
         now = time.time()
         changed = False
+        if mood:
+            try:
+                m = mood.get(state, self.get_json, now)
+                st["mood"], st["mood_line"] = (m or {}).get("status"), mood.line(m) if m else None
+            except Exception as e:
+                log.warning("Market mood failed: %s", type(e).__name__)
         busy = any(pf["open"] or pf.get("pending") for pf in st["pf"].values())
         if busy and now - self.last >= CHECK_SECONDS:
             self.last = now
