@@ -214,6 +214,29 @@ def _line(f, view):
             + (f" — {html.escape(reason)}" if reason else ""))
 
 
+JUDGE_MIN = 0.005   # moves under 0.5% are not counted as right or wrong
+MISS_LIMIT = 2      # same call wrong this many times in a row (same day) -> not repeated
+
+
+def track_misses(state, prev, prices, day):
+    """Count wrong calls in a row per stock and direction (state _ins.miss = {ticker: [day, direction, n]})."""
+    miss = state.setdefault("_ins", {}).setdefault("miss", {})
+    for t in [t for t, v in miss.items() if v[0] != day]:
+        del miss[t]
+    if not prev or not prev.get("calls"):
+        return miss
+    for t, (d, _, p0) in prev["calls"].items():
+        p1 = prices.get(t)
+        if not p0 or not p1 or abs(p1 / p0 - 1) < JUDGE_MIN:
+            continue
+        if (p1 > p0) == (d == "up"):
+            miss.pop(t, None)
+        else:
+            n = miss[t][2] + 1 if t in miss and miss[t][1] == d else 1
+            miss[t] = [day, d, n]
+    return miss
+
+
 def recap(prev, prices, now):
     """One line: how the previous outlook's UP / DOWN calls did since then (price then → price now).
     prev = {"t": time, "calls": {ticker: [direction, confidence, price]}}; None if nothing to compare."""
@@ -225,7 +248,7 @@ def recap(prev, prices, now):
         if not p0 or not p1:
             continue
         m = p1 / p0 - 1
-        if abs(m) < 0.0005:
+        if abs(m) < JUDGE_MIN:  # a +0.1% wiggle is noise, not a right / wrong call
             mark = "➖"
         else:
             judged += 1
@@ -325,6 +348,13 @@ class HourlyInsights:
             if t not in views or views[t][0] not in ("up", "down", "neutral"):
                 views[t] = rule_view(f, per_news[t])
 
+        prices = {t: f["price"] for t, f in feats.items()}
+        miss = track_misses(state, state.get("_ins", {}).get("prev"), prices, day)
+        for t, (_, d, n) in miss.items():
+            if n >= MISS_LIMIT and t in views and views[t][0] == d:
+                views[t] = ("neutral", "low", "")  # wrong twice in a row today: stop repeating the same call
+                log.info("Hourly outlook: a %s call wrong %d times in a row today; shown as no signal", d, n)
+
         rank = {"high": 0, "medium": 1, "low": 2}
         ups = sorted((t for t in feats if views[t][0] == "up"), key=lambda t: rank.get(views[t][1], 3))
         downs = sorted((t for t in feats if views[t][0] == "down"), key=lambda t: rank.get(views[t][1], 3))
@@ -335,7 +365,7 @@ class HourlyInsights:
         lines = [f"🧭 <b>{title}</b> · {et.strftime('%H:%M')} New York ({local} {html.escape(extras.watchlist.TIMEZONE.split('/')[-1])})"]
         if summary:
             lines.append(f"<i>{html.escape(summary)}</i>")
-        back = recap(state.get("_ins", {}).get("prev"), {t: f["price"] for t, f in feats.items()}, now)
+        back = recap(state.get("_ins", {}).get("prev"), prices, now)
         if back:
             lines.append(back)
         lines.append("📈 <b>May go UP</b>")

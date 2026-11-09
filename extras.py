@@ -93,8 +93,13 @@ def related(ticker, hours=3, n=2, skip_halts=False):
     cut = time.time() - hours * 3600
     items = [x for x in RECENT.get(ticker, []) if x[0] >= cut and not (skip_halts and x[2].startswith("TRADING HALTED"))]
     items.sort(key=lambda x: (x[1], x[0]), reverse=True)  # important first, then newest
-    out = []
-    for ts, _, text, link in items[:n]:
+    out, seen = [], set()
+    for ts, _, text, link in items:
+        if len(out) >= n:
+            break
+        if text.lower() in seen:
+            continue  # same headline twice (e.g. two sources) -> one line
+        seen.add(text.lower())
         t = html.escape(text)
         out.append(f"🔎 Possibly related ({_ago(ts)}): " + (f'<a href="{html.escape(link)}">{t}</a>' if link else t))
     return out
@@ -459,15 +464,12 @@ class Heartbeat:
         up = calendar_upcoming(state)
         if up:
             lines.append("📅 <b>Next 14 days</b>")
-            lines += [f"• {_day(e[1])}: <b>${e[0]}</b> {html.escape(e[3])}" for e in up]
+            soon = {today: " — <b>TODAY</b>", (now.date() + timedelta(days=1)).isoformat(): " — <b>TOMORROW</b>"}
+            lines += [f"• {_day(e[1])}: <b>${e[0]}</b> {html.escape(e[3])}{soon.get(e[1], '')}" for e in up]
         lines.append("<i>Dates come from company announcements in the news; check the company's IR page.</i>"
                      if up else "📅 No earnings / FDA dates found in the news for the next 14 days.")
         self.send("\n".join(lines))
-        soon = [e for e in up if e[1] <= (now.date() + timedelta(days=1)).isoformat()]
-        if soon:
-            self.send("📅 <b>Coming up</b>\n" + "\n".join(
-                f"• <b>${e[0]}</b> {html.escape(e[3])} — <b>{'TODAY' if e[1] == today else 'TOMORROW'}</b>"
-                for e in soon))
+        # (the separate "📅 Coming up" message was dropped 2026-11-09: TODAY / TOMORROW are marked in the list above)
         return True
 
 

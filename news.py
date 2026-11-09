@@ -78,12 +78,16 @@ GOV = re.compile(r"\b(U\.S\.|US|federal|government|Army|Navy|Air Force|Space For
                  r"Department of|DARPA|BARDA|HHS|NIH|CDC|DHS|NASA|GSA|state of|city of|county|municipal|"
                  r"transit|authority|DOT|agency|ministry)\b")
 AMOUNT = re.compile(r"(?:US)?\$\s?(\d[\d,]*(?:\.\d+)?)\s?(billion|bn|b|million|mln|mn|m)?\b", re.I)
+FINANCING = re.compile(r"\b(tranche|funding package|financing|loan|credit facility|private placement|offering|"
+                       r"convertible|notes due|equity (investment|raise)|streaming agreement|royalty financing)\b", re.I)
 
 
 def contract_info(text):
     """(is_contract, is_government, largest $ amount or 0) from a headline/snippet."""
     if not CONTRACT.search(text) or re.search(r"\b(futures?|options?) contracts?\b", text, re.I):
         return False, False, 0
+    if FINANCING.search(text) and not GOV.search(text):
+        return False, False, 0  # the company raising money (loan tranche, funding package) is not a contract win
     best = 0
     for num, unit in AMOUNT.findall(text):
         v = float(num.replace(",", ""))
@@ -111,6 +115,19 @@ IMPORTANT = re.compile(r"\b(FDA|approv\w*|PDUFA|CRL|complete response|BLA|NDA|sN
 PREVIEW = re.compile(r"\b(preview|what to expect|ahead of|expectations?|(set|scheduled|expected) to report|"
                      r"to report (q\d|earnings|results)|should you|is it time|what (are )?(analysts|researchers) (are )?saying|"
                      r"things to watch|what to watch|earnings date)\b", re.I)
+# Routine items that rarely move a stock -> 📰 (quiet) even when IMPORTANT matches: law-firm ads, board seats,
+# conference talks, list articles. (CEO / CFO changes stay 🚨.)
+LAWFIRM = re.compile(r"\b(pomerantz|rosen law|levi & korsinsky|bragar|kahn swick|halper sadeh|bronstein|glancy|faruqi|"
+                     r"schall law|gross law|class action|shareholder alert|investors? (who|with) (lost|losses))", re.I)
+MINOR = re.compile(r"\b(board of directors|to (its |the )?board\b|(joins|appoints?|elects?|names?) .{0,40}\bdirector\b|"
+                   r"conference(?! call)|fireside|to present at|presents? at|investor day|"
+                   r"featured highlights|stocks? to (buy|watch)|top \d+ stocks)", re.I)
+# ...but a routine-looking headline that carries real news stays 🚨
+STRONG = re.compile(r"\b(FDA|approv\w*|topline|top-line|phase\s?(2|3|ii|iii)\b|results|earnings|guidance|revenue|"
+                    r"acqui\w*|merger|buyout|takeover|offering|bankrupt\w*|delist\w*)\b", re.I)
+EXEC = re.compile(r"\b(CEO|CFO|chief executive|chief financial)\b", re.I)
+# Market-wide lists ("… and other big stocks moving lower") tag many symbols; skip unless the title names the company
+ROUNDUP_SYMBOLS = 4
 
 FORM_NAMES = {
     "8-K": "8-K (material event)", "6-K": "6-K (foreign issuer report)", "10-Q": "10-Q (quarterly report)",
@@ -245,9 +262,20 @@ def _prune_recent(ns, now=None):
             del rec[t]
 
 
+# A bare ticker right after a foreign exchange name ("TSX: SLS") or with a foreign suffix ("SLS.TO") is another
+# company that shares the symbol (2026-11-09: Solaris Resources TSX:SLS was sent as SELLAS $SLS).
+FOREIGN_BEFORE = re.compile(r"\b(TSX|TSXV|TSX-V|CSE|NEO|CBOE CA|ASX|LSE|AIM|NSE|BSE|HKEX|SEHK|SGX|JSE|TASE|XETRA|"
+                            r"FWB|ETR|Euronext|EPA|BIT|BME|SIX|OSE|TSE|KRX|TWSE|NZX)\s*[:\-]?\s*$", re.I)
+FOREIGN_AFTER = re.compile(r"^\.(TO|V|CN|NE|AX|L|HK|NS|BO|SI|DE|F|PA|MI|AS|SW|T|KS|TW|NZ)\b")
+
+
 def _matches(text, ticker):
     for kw in COMPANIES.get(ticker, {}).get("match", [ticker]):
-        if re.search(r"(?<![A-Za-z])" + re.escape(kw) + r"(?![A-Za-z])", text, re.I if not kw.isupper() or len(kw) > 5 else 0):
+        flags = re.I if not kw.isupper() or len(kw) > 5 else 0
+        for m in re.finditer(r"(?<![A-Za-z])" + re.escape(kw) + r"(?![A-Za-z])", text, flags):
+            if kw.upper() == ticker.upper() and (FOREIGN_BEFORE.search(text[max(0, m.start() - 12):m.start()])
+                                                 or FOREIGN_AFTER.match(text[m.end():m.end() + 4])):
+                continue  # same symbol on another exchange
             return True
     return False
 
@@ -320,6 +348,8 @@ def alpaca_news(tickers):
         if JUNK.search(it["title"]):
             continue
         for t in want.intersection(it["symbols"]):
+            if len(it["symbols"]) >= ROUNDUP_SYMBOLS and not _matches(it["title"], t):
+                continue  # roundup of many stocks; nothing specific about this one in the headline
             out.append({"title": it["title"], "link": it["link"], "desc": it["desc"], "date": it["date"],
                         "source": it["source"], "ticker": t})
     return out
@@ -805,6 +835,10 @@ class NewsWatcher:
                 log.info("News: federal award already reported; skipped")
                 self.queue.pop(0)
                 continue
+            if it.get("not_about"):
+                log.info("News: about another company / a market roundup (AI); skipped")
+                self.queue.pop(0)
+                continue
             if it.get("repeat"):
                 log.info("News: repeat of an earlier story (AI); skipped")
                 _recent_add(ns, it["ticker"], it["title"])
@@ -898,7 +932,9 @@ class NewsWatcher:
             return "\n".join(lines)
         c = it.get("contract")
         big = c is not None and c >= CONTRACT_MIN
-        loud = IMPORTANT.search(it["title"]) and not PREVIEW.search(it["title"])
+        loud = IMPORTANT.search(it["title"]) and not PREVIEW.search(it["title"]) and not it.get("minor") \
+            and not LAWFIRM.search(it["title"]) \
+            and not (MINOR.search(it["title"]) and not EXEC.search(it["title"]) and not STRONG.search(it["title"]))
         icon = ("🚨" if big or loud else "📰") + ("🏛️" if c is not None else "")
         srcs = it.get("sources") or [it.get("source", "")]
         src = html.escape(srcs[0]) + (f" +{len(srcs) - 1} more" if len(srcs) > 1 else "")

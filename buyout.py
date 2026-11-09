@@ -87,7 +87,7 @@ BO_WORDS = re.compile(
     r"\b(takeover|take[- ]private|buyout|buy[- ]out|to be acquired|agrees? to be acquired|acquisition (offer|proposal|"
     r"interest|talks)|merger (agreement|talks)|definitive (merger )?agreement|tender offer|unsolicited|"
     r"(explor\w+|weigh\w*|consider\w*|review\w*) (a |the )?(sale|strategic (alternatives|options))|strategic "
-    r"(alternatives|review)|(hires?|hired|working with|taps?) (advisers|advisors|bankers)|in talks|approach(ed)?|"
+    r"(alternatives|review)|(hires?|hired|working with|taps?) (advisers|advisors|bankers)|in talks|(takeover|buyout|acquisition|buy-?out) approach|approached (by|about)|received an? (takeover |buyout )?approach|"
     r"bid for|(per[- ]share|all[- ]cash) (offer|deal)|go(ing)? private|activist|stake in|13D|poison pill|"
     r"(shareholder|stockholder) rights (plan|agreement)|people familiar)\b", re.I)
 MAJOR = re.compile(
@@ -307,7 +307,8 @@ def _name_words(name):
 def mentions(text, t, name):
     if re.search(r"(?<![A-Za-z$])\$?" + re.escape(t) + r"(?![A-Za-z])", text):
         return True
-    return any(re.search(r"\b" + re.escape(w) + r"\b", text, re.I) for w in _name_words(name) if len(w) >= 4)
+    # name word as a word on its own: not inside a compound like "Bandwidth-First" (2026-11-09 IPTV article for BAND)
+    return any(re.search(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", text, re.I) for w in _name_words(name) if len(w) >= 4)
 
 
 # ---------------------------------------------------------------- formatting
@@ -561,7 +562,8 @@ class BuyoutWatch:
                 when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""
                 self.send(f"{head}\n{html.escape(h['title'])}\n<i>{html.escape(h['source'] or 'news')}</i>{when}\n"
                           f'<a href="{html.escape(h["link"])}">Open</a>', None if bo_hit else True)
-                extras.remember(t, f"{head}\n{h['title']}", h["link"])
+                # first line = what "🔎 Possibly related" shows later: the headline itself, not "major news"
+                extras.remember(t, f"{'🎯🚨' if bo_hit else '📰'} ${t} {h['title']}", h["link"])
             if SEC_CONTACT:
                 try:
                     for it in self._sec(t):

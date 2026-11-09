@@ -331,6 +331,31 @@ def _same_name(a, b):
     return bool(wa) and wa[0] in re.findall(r"\w+", b.lower())
 
 
+def _buyer_key(b):
+    """'NASA' / 'National Aeronautics and Space Administration (NASA)' / 'U.S. Department of Defense' -> comparable key."""
+    b = re.sub(r"\b(the|u\.?s\.?|us|united states|of|department|dept|government|gov|federal|and|&)\b", " ", (b or "").lower())
+    words = re.findall(r"[a-z0-9]{2,}", b)
+    return " ".join(words[:2])
+
+
+def already_sent(sent, sym, usd, buyer, today, days=3):
+    """Same company + similar amount (another source), or same company + same buyer in the last few days
+    (the same deal reported as a ceiling and as its first order, or with a different total) -> True."""
+    try:
+        since = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
+    except ValueError:
+        since = ""
+    key = _buyer_key(buyer)
+    for s in sent:
+        if s[0] != sym:
+            continue
+        if abs(s[1] - usd / 1e6) <= 0.2 * max(s[1], usd / 1e6):
+            return True
+        if key and len(s) > 3 and s[3] and s[3] == key and s[2] >= since:
+            return True
+    return False
+
+
 def fmt_usd(v):
     return impact.money(v)
 
@@ -773,9 +798,8 @@ class ContractScanner:
             cap = self.yahoo.market_cap_usd(sym)
         except Exception:
             return False
-        for s_sym, s_m, _ in sent:  # already reported from the news
-            if s_sym == sym and abs(s_m - usd / 1e6) <= 0.2 * max(s_m, usd / 1e6):
-                return False
+        if already_sent(sent, sym, usd, " · ".join(x for x in (a.get("Awarding Agency"), a.get("Awarding Sub Agency")) if x), today):
+            return False  # already reported from the news
         try:
             signed = datetime.strptime((a.get("Base Obligation Date") or "")[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
         except ValueError:
@@ -798,7 +822,7 @@ class ContractScanner:
         it = {**it, "age_h": age_h, "first_h": first_h, "first_src": src if first_h is not None else "", "traded": False}
         text = self.format(it, r, sym, name, usd, cap, ratio, False)
         if self.send(text, True):
-            sent.append([sym, round(usd / 1e6, 2), today])
+            sent.append([sym, round(usd / 1e6, 2), today, _buyer_key(r.get("buyer"))])
             if learn and self.state is not None:
                 try:
                     learn.record(self.state, "contract", sym, "up", "low", "rules",
@@ -938,9 +962,9 @@ class ContractScanner:
         if not CAP_MIN <= cap <= CAP_MAX:
             return False
         # same company + similar amount already sent (another source / language) -> skip
-        for s_sym, s_m, _ in sent:
-            if s_sym == sym and abs(s_m - usd / 1e6) <= 0.2 * max(s_m, usd / 1e6):
-                return False
+        if already_sent(sent, sym, usd, r.get("buyer"), today):
+            log.info("Contract scan: same company + amount or buyer already sent; skipped")
+            return False
         if r["kind"] == "new" and CEILING_RE.search(f"{it['title']} {it.get('desc', '')}"):
             r = {**r, "kind": "ceiling"}
         ratio = usd / cap
@@ -985,7 +1009,7 @@ class ContractScanner:
         it = {**it, "age_h": age_h, "first_h": first_h, "first_src": first_src, "traded": traded}
         text = self.format(it, r, sym, name, usd, cap, ratio, big)
         if self.send(text, not big):
-            sent.append([sym, round(usd / 1e6, 2), today])
+            sent.append([sym, round(usd / 1e6, 2), today, _buyer_key(r.get("buyer"))])
             if learn and self.state is not None:
                 try:
                     learn.record(self.state, "contract", sym, "up", "high" if big else "low", "rules",

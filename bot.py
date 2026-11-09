@@ -70,6 +70,10 @@ PAPER_CHAT_ID = os.environ.get("PAPER_CHAT_ID", "").strip()    # 🧪 practice p
 CONTRACT_SCAN_SECONDS = int(os.environ.get("CONTRACT_SCAN_SECONDS", "60"))  # one market per scan
 TICKERS = watchlist.TICKERS
 THRESHOLDS = watchlist.THRESHOLDS  # ticker -> fraction, e.g. 0.02
+# First minutes after the 9:30 ET open swing back and forth (2026-11-09: BZUN -2.3% then +2.5% within 3 min):
+# hold ±step alerts that long, unless the move is already OPEN_BIG_X times the step.
+OPEN_HOLD = int(os.environ.get("OPEN_HOLD_MINUTES", "15")) * 60
+OPEN_BIG_X = 3
 HEARTBEAT_ROLE = os.environ.get("HEARTBEAT_ROLE", "").strip().lower()
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 STATE_FILE = os.environ.get("STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"))
@@ -467,6 +471,13 @@ def fmt_pct(x):
     return f"{x * 100:+.2f}%"
 
 
+def in_open_hold(ticker, now=None):
+    reg = (((LAST_CHART.get(ticker) or {}).get("meta") or {}).get("currentTradingPeriod") or {}).get("regular") or {}
+    start = reg.get("start")
+    now = now or time.time()
+    return bool(start) and start <= now < start + OPEN_HOLD
+
+
 def check(ticker, state, errors, volume=None):
     try:
         price, prev_close, session = fetch_price(ticker)
@@ -497,7 +508,10 @@ def check(ticker, state, errors, volume=None):
 
     ref = s["ref"]
     change = price / ref - 1
-    if abs(change) >= THRESHOLDS.get(ticker, 0.02):
+    step = THRESHOLDS.get(ticker, 0.02)
+    if session == "regular" and abs(change) < OPEN_BIG_X * step and in_open_hold(ticker):
+        return changed  # opening swings: compare again after the hold (the reference price stays)
+    if abs(change) >= step:
         up = change > 0
         day = f"\nDay: {fmt_pct(price / prev_close - 1)} vs prev close ${fmt_price(prev_close)}" if prev_close else ""
         msg = (f"{'🟢📈' if up else '🔴📉'} <b>${ticker}</b> {'UP' if up else 'DOWN'} {fmt_pct(change)}\n"
