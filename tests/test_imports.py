@@ -6,7 +6,7 @@ import unittest
 
 class Imports(unittest.TestCase):
     def test_all_modules_import(self):
-        for m in ("alpaca", "bot", "buyout", "contracts", "extras", "impact", "insights", "learn", "news",
+        for m in ("alpaca", "bot", "buyout", "contracts", "extras", "impact", "insights", "learn", "movers", "news",
                   "paper", "watchlist"):
             with self.subTest(module=m):
                 importlib.import_module(m)
