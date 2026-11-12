@@ -448,6 +448,39 @@ def snapshot(st, now, data):
         del be[:-1000]
 
 
+# The owner's rule (agreed 2026-11-12): no real money on bot calls until a practice portfolio has 30+ closed trades
+# AND is ahead of the S&P (value and average trade); stop again if it falls 15% from its own top.
+RULE_TRADES, RULE_STOP = 30, -0.15
+
+
+def money_rule(st, now, data):
+    """One line: does any practice portfolio pass the real-money rule yet?"""
+    bv = _bench(st, now, data) or START_EUR
+    best, ok, paused = None, [], []
+    for key, (name, _) in PORTFOLIOS.items():
+        pf = st["pf"].get(key)
+        if not pf:
+            continue
+        v = value(pf, now, data)
+        vs = [x["vs"] for x in pf["closed"] if x.get("vs") is not None]
+        eq = (pf.get("eq") or []) + [v]
+        off_top = v / max([START_EUR] + eq) - 1
+        if len(pf["closed"]) >= RULE_TRADES and v > bv and vs and sum(vs) / len(vs) > 0:
+            (paused if off_top <= RULE_STOP else ok).append((name.split()[0], len(pf["closed"]), v, off_top))
+        if best is None or (len(pf["closed"]), v) > (best[1], best[2]):
+            best = (name.split()[0], len(pf["closed"]), v)
+    head = "💶 <b>Real-money rule</b> (30+ closed trades and ahead of the S&P; stop at −15% from the top): "
+    if ok:
+        return head + "✅ " + ", ".join(f"{n} passes ({c} trades, €{v:.2f} vs S&P €{bv:.2f})" for n, c, v, _ in ok) + \
+            " — start small; the rule is checked again every day"
+    if paused:
+        return head + "⏸️ " + ", ".join(f"{n} paused ({d * 100:.0f}% from its top)" for n, _, _, d in paused)
+    if best:
+        return head + (f"❌ not yet — most trades: {best[0]} {best[1]}/{RULE_TRADES} closed, €{best[2]:.2f} vs S&P "
+                       f"€{bv:.2f}. Real money only on your own judgment.")
+    return head + "❌ not yet"
+
+
 def report(st, now, data, title):
     d0 = _ny(st["since"]).strftime("%b %d")
     lines = [f"🧪 <b>{html.escape(title)}</b>", f"<i>Pretend €100 each, started {d0}. Simulation, not advice.</i>"]
@@ -467,6 +500,10 @@ def report(st, now, data, title):
                      " — the number to beat")
     if st.get("mood_line"):
         lines.append(st["mood_line"])
+    try:
+        lines.append(money_rule(st, now, data))
+    except Exception as e:
+        log.warning("Practice money rule failed: %s", type(e).__name__)
     tl = trade_lines(st, now - 86400)
     if tl:
         lines.append("<b>Last 24h:</b>")

@@ -14,9 +14,10 @@ A personal stock-watching bot that sends Telegram messages. It runs 24/7 for fre
 | 🧭 Hourly outlook | Each market hour: a short view per stock, then a check of the last hour's calls | `insights.py` | main |
 | 🏛️ Contract wins | Contract / tender wins by small and mid caps: press wires, 15 markets, ASX + HKEX announcements (PDF), USAspending.gov federal awards | `contracts.py` | contracts |
 | 🏆 Winners & losers | Pre-market movers and daily top movers of all US stocks + a "mover diary" that measures how many big moves were foreseeable | `movers.py` | contracts |
-| 🎯 Buyout watch | Daily screen for takeover-type companies + live takeover news / SEC merger filings for the candidates | `buyout.py` | buyout |
+| 🎯 Buyout watch | Daily screen for takeover-type companies + live takeover news / SEC merger filings for the candidates. 📣 Hourly public sale signals for all US stocks ($100M–$20B): strategic review, rejected offer, unsolicited offer, activist pushing a sale (passive stake reports are ignored) | `buyout.py` | buyout |
+| 📊 Earnings patterns | 3 days before a watchlist stock reports: how it moved around its last 8 reports (5 days before, gap, report day, next 5 days, volume), from SEC filings + Yahoo prices | `earnings.py` | main |
 | 🎓 Learning review | Saves every UP/DOWN call with its price, checks the outcome later, posts hit rates every 2 days and feeds the lessons back to the AI | `learn.py` | main |
-| 🧪 Practice portfolios | Pretend €100 per portfolio trading the bot's own calls at real market prices (spread, fees, stops, profit lock), vs the S&P 500, with 📉 worst drop | `paper.py` | practice |
+| 🧪 Practice portfolios | Pretend €100 per portfolio trading the bot's own calls at real market prices (spread, fees, stops, profit lock), vs the S&P 500, with 📉 worst drop; the daily report checks the owner's 💶 real-money rule (30+ closed trades and ahead of the S&P; stop at −15% from the top) | `paper.py` | practice |
 | 🌡️ Market mood | Risk-on / neutral / defensive from 20 days of QQQ, QQQ vs XLP, IWM, XBI. Shown in the daily check + practice statements. The 🌡️ practice portfolio skips buys while it is defensive, to *measure* whether that helps | `mood.py` | main, practice |
 | ☀️ Daily check | Morning status: GitHub bot + phone forwarder alive, yesterday's counts, market mood, earnings / FDA dates for the next 14 days | `extras.py` | main |
 

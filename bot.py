@@ -53,6 +53,10 @@ except ImportError:  # e.g. an older phone copy without alpaca.py
         selftest = staticmethod(lambda: "OFF (alpaca.py missing)")
 import buyout
 try:
+    import earnings
+except ImportError:  # phone copy without earnings.py
+    earnings = None
+try:
     import movers
 except ImportError:  # phone copy without movers.py
     movers = None
@@ -69,6 +73,7 @@ except ImportError:  # phone copy without learn.py
     learn = None
 import watchlist
 from news import NewsWatcher
+from news import sec_cik as news_sec_cik
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
@@ -577,6 +582,9 @@ def main():
                            if PAPER_CHAT_ID else ", daily report here)"))
         if HEARTBEAT_ROLE != "phone":
             extra += "\nReal-time news ⚡: " + alpaca.selftest()
+        if earnings and HEARTBEAT_ROLE != "phone" and earnings.ON:
+            extra += "\nEarnings patterns 📊: " + (earnings.EarningsWatch.label() if earnings.EarningsWatch.enabled()
+                                                   else "OFF (needs SEC_CONTACT)")
         if movers and HEARTBEAT_ROLE != "phone" and movers.MoversWatch.enabled():
             extra += "\nWinners & losers 🏆: " + movers.MoversWatch.label() + (
                 " → contracts channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
@@ -606,6 +614,8 @@ def main():
                 if HEARTBEAT_ROLE != "phone" and BUYOUT_CHAT_ID and buyout.BuyoutWatch.enabled() else None)
     mv_watch = (movers.MoversWatch(lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID), TICKERS)
                 if movers and HEARTBEAT_ROLE != "phone" and movers.MoversWatch.enabled() else None)
+    earn_watch = (earnings.EarningsWatch(send_telegram, TICKERS, news_sec_cik)
+                  if earnings and HEARTBEAT_ROLE != "phone" and earnings.EarningsWatch.enabled() else None)
     outlook = (insights.HourlyInsights(TICKERS, LAST_CHART, volume, send_telegram)
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(
@@ -634,6 +644,8 @@ def main():
             checks.append(("Hourly outlook", outlook.check))
         if mv_watch:
             checks.append(("Winners & losers", mv_watch.check))
+        if earn_watch:
+            checks.append(("Earnings patterns", earn_watch.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if practice:
