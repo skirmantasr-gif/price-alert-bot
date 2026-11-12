@@ -15,6 +15,7 @@ for k in ("ALPACA_KEY", "ALPACA_SECRET", "ANTHROPIC_API_KEY", "SEC_CONTACT", "TE
           "PAPER_CHAT_ID", "BUYOUT", "BUYOUT_CHAT_ID", "CONTRACTS_CHAT_ID"):
     os.environ.pop(k, None)
 os.environ["OPTIONS"] = "false"   # options context off by default (test_options switches it on where needed)
+os.environ["CONTEXT_CHECK"] = "false"   # context check off by default (test_context switches it on)
 
 
 class NetworkBlocked(RuntimeError):
