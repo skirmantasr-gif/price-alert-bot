@@ -140,3 +140,26 @@ class HitRateCountsFlat(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TradableOnly(unittest.TestCase):
+    def test_untradable_markets_not_scanned(self):
+        names = [m[0] for m in contracts.SCAN_MARKETS]
+        for gone in ("India", "South Korea", "Taiwan"):
+            self.assertNotIn(gone, names)
+        for kept in ("US", "Germany", "China", "Hong Kong", "Australia"):
+            self.assertIn(kept, names)
+
+    def test_untradable_symbol_skipped_before_any_lookup(self):
+        s = contracts.ContractScanner.__new__(contracts.ContractScanner)
+        s.skip, s.state = set(), None
+        s.yahoo = mock.Mock()
+        s.yahoo.fx_rate.return_value = 0.012
+        s.yahoo.find.return_value = ("COCHINSHIP.NS", "Cochin Shipyard Limited")
+        r = {"is_win": True, "public_buyer": True, "company": "Cochin Shipyard", "ticker_hint": "COCHINSHIP", "amount": 9.8e10, "currency": "INR",
+             "kind": "new", "buyer": "Indian Navy"}
+        it = {"title": "Cochin Shipyard wins Navy order", "market": "India", "date": None}
+        sent = []
+        with mock.patch.object(contracts, "TRADABLE_ONLY", True):
+            self.assertFalse(s.handle(it, r, sent, "2026-11-12"))
+        s.yahoo.market_cap_usd.assert_not_called()
