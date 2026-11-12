@@ -33,14 +33,19 @@ MIN_VOL_RATIO = 1.3
 CLUSTER_DAYS = 40
 CHECK_SECONDS = 3600
 FTS_PHRASES = ('"financial results"', '"earnings release"')
-NOT_LISTED = {"DXYZ"}   # closed-end fund: no quarterly results calls
+
+
+MAX_BYTES = 20_000_000   # SEC submissions JSON of a big filer is a few MB; never read more than this
 
 
 def _get(url, timeout=30):
     req = urllib.request.Request(url, headers={"User-Agent": f"price-alert-bot {SEC_CONTACT}",
                                                "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        data = r.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ValueError("response too large")
+    return data
 
 
 def _yget(url, timeout=30):
@@ -187,13 +192,18 @@ class EarningsWatch:
         changed = False
         for tk, iso, kind, _label in extras.calendar_upcoming(state, LEAD_DAYS):
             key = f"{tk}:{iso}"
-            if kind != "earnings" or tk not in self.tickers or tk in NOT_LISTED or key in sent:
+            if kind != "earnings" or tk not in self.tickers or key in sent:
                 continue
             try:
                 rows = self.pattern(tk)
             except Exception as e:
                 log.warning("Earnings pattern failed: %s", type(e).__name__)
                 continue
+            if not rows:   # no results filings found (e.g. a fund): nothing useful to show
+                sent.append(key)
+                changed = True
+                log.info("Earnings pattern: no past report days found; nothing sent")
+                break
             if self.send(message(tk, iso, rows), False):
                 sent.append(key)
                 changed = True

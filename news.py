@@ -160,7 +160,7 @@ def _get(url, headers=None, timeout=20):
 
 
 # Company merging with its OWN new holding company (redomicile / reincorporation, 1-for-1 shares) files the same
-# forms as a real takeover (DEFM14A, 425, S-4, 8-K 1.01). Example: Criteo Nov 2026. Detected from the filing text.
+# forms as a real takeover (DEFM14A, 425, S-4, 8-K 1.01). Seen Nov 2026. Detected from the filing text.
 REORG_FORMS = re.compile(r"^(DEFM14|PREM14|DEFA14A|425|S-4|F-4|424B3|8-K)", re.I)
 REORG_RE = re.compile(r"re-?domicil|redomesticat|re-?incorporat|change (of|in) (its )?(domicile|jurisdiction of "
                       r"incorporation)|holding company reorgani[sz]ation|internal reorgani[sz]ation", re.I)
@@ -181,8 +181,8 @@ def _sec_text(url, limit):
 
 def sec_reorg(f):
     """True if a merger-type filing is only a company merging into its OWN new holding company (redomicile /
-    reincorporation, 1-for-1 shares), not a buyout. Example: Criteo, Nov 2026. Signals: (a) the filing's two
-    filers share the family name (Criteo S.A. + Criteo Holdings, Inc.; in a real deal the other filer is the
+    reincorporation, 1-for-1 shares), not a buyout. Signals: (a) the filing's two
+    filers share the family name (Acme S.A. + Acme Holdings, Inc.; in a real deal the other filer is the
     buyer), or (b) the text talks about the company's own redomicile / 1-for-1 swap into its own subsidiary.
     Never True if the text mentions a cash price, premium or tender offer. Errors → False (normal alert)."""
     form, items = f.get("form", "").upper(), f.get("items") or []

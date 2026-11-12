@@ -246,7 +246,7 @@ def load_state():
 def save_state(state):
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(state, f, indent=2)
+        json.dump(state, f, separators=(",", ":"))   # compact: the file is committed after every run
     os.replace(tmp, STATE_FILE)
 
 
@@ -724,6 +724,15 @@ def main():
     # Heartbeat so the repo gets a commit each run (GitHub pauses schedules on repos idle for 60 days).
     state["_last_run"] = datetime.now(timezone.utc).isoformat()
     save_state(state)
+    try:   # which parts of the saved state are biggest (key names only) - to keep the repo from growing
+        sizes = sorted(((len(json.dumps(v, separators=(",", ":"))), k) for k, v in state.items() if k.startswith("_")),
+                       reverse=True)
+        # per-stock entries are named by ticker: counted together, never named (the logs are public)
+        sizes.append((sum(len(json.dumps(v)) for k, v in state.items() if not k.startswith("_")), "per-stock"))
+        log.info("State size: %d KB (%s)", sum(n for n, _ in sizes) // 1024,
+                 ", ".join(f"{k} {n // 1024} KB" for n, k in sizes[:8]))
+    except Exception:
+        pass
     log.info("Max runtime reached, exiting (next scheduled run takes over).")
 
 

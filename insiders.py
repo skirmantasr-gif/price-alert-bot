@@ -38,10 +38,17 @@ ATOM = "{http://www.w3.org/2005/Atom}"
 TOP_ROLE = re.compile(r"\b(CEO|chief executive|CFO|chief financial|president)\b", re.I)
 
 
+MAX_BYTES = 5_000_000      # filings are written by the companies: never read more than this
+SEC_PAUSE = 0.25           # s between SEC requests; other modules use SEC too (limit: 10 per second in total)
+
+
 def _get(url, timeout=30):
     req = urllib.request.Request(url, headers={"User-Agent": f"price-alert-bot {SEC_CONTACT}"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        data = r.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ValueError("response too large")
+    return data
 
 
 # ---------------------------------------------------------------- SEC data
@@ -245,7 +252,7 @@ class InsiderWatch:
                 out.append((acc, parse_form4(filing_xml(cik, acc)), cik))
             except Exception:
                 out.append((acc, None, cik))
-            time.sleep(0.15)   # SEC: max 10 requests per second
+            time.sleep(SEC_PAUSE)
         have = {a for a, _, _ in out} | set(seen)
         looked = []
         for cik in dict.fromkeys(c for _, f, c in out if f and f["buys"] and f["officer_or_director"]):
@@ -256,14 +263,14 @@ class InsiderWatch:
                 accs = [a for a in recent_form4(cik) if a not in have][:HIST_MAX]
             except Exception:
                 continue
-            time.sleep(0.15)
+            time.sleep(SEC_PAUSE)
             for acc in accs:
                 try:
                     out.append((acc, parse_form4(filing_xml(cik, acc)), cik))
                     have.add(acc)
                 except Exception:
                     pass
-                time.sleep(0.15)
+                time.sleep(SEC_PAUSE)
         return {"filings": out, "looked": looked}
 
     def check(self, state):
