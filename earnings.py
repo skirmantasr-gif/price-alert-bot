@@ -204,7 +204,17 @@ class EarningsWatch:
                 changed = True
                 log.info("Earnings pattern: no past report days found; nothing sent")
                 break
-            if self.send(message(tk, iso, rows), False):
+            text = message(tk, iso, rows)
+            try:
+                import options
+                o = options.get(tk)
+                if o and o.get("move_pct") and o["exp"] >= iso:
+                    past = sorted(abs(r["day"]) * 100 for r in rows)
+                    text += (f"\n🎲 Options price in about <b>±{o['move_pct']:.0f}%</b> by {options._d(o['exp'])}; "
+                             f"the middle past report-day move was ±{past[len(past) // 2]:.0f}%.")
+            except Exception:
+                pass
+            if self.send(text, False):
                 sent.append(key)
                 changed = True
                 log.info("Earnings pattern sent (%d past reports)", len(rows))

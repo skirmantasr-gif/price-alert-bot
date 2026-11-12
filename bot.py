@@ -65,6 +65,10 @@ try:
 except ImportError:  # phone copy without weekly.py
     weekly = None
 try:
+    import options
+except ImportError:  # phone copy without options.py
+    options = None
+try:
     import movers
 except ImportError:  # phone copy without movers.py
     movers = None
@@ -539,7 +543,8 @@ def check(ticker, state, errors, volume=None):
         msg = (f"{'🟢📈' if up else '🔴📉'} <b>${ticker}</b> {'UP' if up else 'DOWN'} {fmt_pct(change)}\n"
                f"Price: <b>${fmt_price(price)}</b> (was ${fmt_price(ref)} at last alert)"
                f"{day}\nSession: {session}")
-        msg = "\n".join([msg] + extras.related(ticker))
+        opt = options.near_expiry(ticker) if options and HEARTBEAT_ROLE != "phone" else ""
+        msg = "\n".join([msg] + ([opt] if opt else []) + extras.related(ticker))
         if send_telegram(msg):
             state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
             extras.bump(state, "price")
@@ -637,7 +642,8 @@ def main():
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(
         HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on,
-        daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st)])
+        daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st)]
+                     + (options.daily_lines(TICKERS) if options else []))
         if HEARTBEAT_ROLE != "phone" else None)
     reviewer = None
     if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
@@ -649,6 +655,8 @@ def main():
         practice = learn.paper.Tracker(http_get_json, lambda text, silent=True: send_telegram(text, silent, PAPER_CHAT_ID or None),
                                        live_trades=bool(PAPER_CHAT_ID))
         practice.attach(state)  # before any alert is sent, so the first calls are traded too
+    opt_watch = (options.UnusualWatch(send_telegram, TICKERS)
+                 if options and HEARTBEAT_ROLE != "phone" and options.UnusualWatch.enabled() else None)
     wk_review = (weekly.WeeklyReview(send_telegram, practice)
                  if weekly and HEARTBEAT_ROLE != "phone" and weekly.WeeklyReview.enabled() else None)
     started = time.time()
@@ -670,6 +678,8 @@ def main():
             checks.append(("Insider clusters", ins_watch.check))
         if wk_review:
             checks.append(("Weekly review", wk_review.check))
+        if opt_watch:
+            checks.append(("Options activity", lambda st: opt_watch.check(st, options.market_open_ny())))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if practice:

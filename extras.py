@@ -336,7 +336,12 @@ class VolumeWatcher:
         changed = vs.get(ticker) != rec
         vs[ticker] = rec
         if msg:
-            msg = "\n".join([msg] + related(ticker))
+            try:
+                import options
+                opt = options.near_expiry(ticker) if watchlist.TICKERS else ""
+            except Exception:
+                opt = ""
+            msg = "\n".join([msg] + ([opt] if opt else []) + related(ticker))
             if self.send(msg):
                 bump(state, "volume")
                 log.info("Volume alert sent")
