@@ -61,6 +61,10 @@ try:
 except ImportError:  # phone copy without insiders.py
     insiders = None
 try:
+    import weekly
+except ImportError:  # phone copy without weekly.py
+    weekly = None
+try:
     import movers
 except ImportError:  # phone copy without movers.py
     movers = None
@@ -589,6 +593,8 @@ def main():
         if earnings and HEARTBEAT_ROLE != "phone" and earnings.ON:
             extra += "\nEarnings patterns 📊: " + (earnings.EarningsWatch.label() if earnings.EarningsWatch.enabled()
                                                    else "OFF (needs SEC_CONTACT)")
+        if weekly and HEARTBEAT_ROLE != "phone" and weekly.ON:
+            extra += f"\nWeekly review 📅: ON (Sundays {weekly.WEEKLY_TIME} LT)"
         if insiders and HEARTBEAT_ROLE != "phone" and insiders.ON:
             extra += "\nInsider cluster buys 👥: " + (insiders.InsiderWatch.label() if insiders.InsiderWatch.enabled()
                                                      else "OFF (needs SEC_CONTACT)")
@@ -641,6 +647,8 @@ def main():
         practice = learn.paper.Tracker(http_get_json, lambda text, silent=True: send_telegram(text, silent, PAPER_CHAT_ID or None),
                                        live_trades=bool(PAPER_CHAT_ID))
         practice.attach(state)  # before any alert is sent, so the first calls are traded too
+    wk_review = (weekly.WeeklyReview(send_telegram, practice)
+                 if weekly and HEARTBEAT_ROLE != "phone" and weekly.WeeklyReview.enabled() else None)
     started = time.time()
     while True:
         battery.check()
@@ -658,6 +666,8 @@ def main():
             checks.append(("Earnings patterns", earn_watch.check))
         if ins_watch:
             checks.append(("Insider clusters", ins_watch.check))
+        if wk_review:
+            checks.append(("Weekly review", wk_review.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if practice:
