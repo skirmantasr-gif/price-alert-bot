@@ -210,6 +210,54 @@ def _short(n):
     return f"{n / 1e6:.2f}M" if n >= 1e6 else f"{n / 1e3:.0f}K" if n >= 1e3 else f"{n:.0f}"
 
 
+FLOW_LEAN = 0.55   # >= 55% of volume on rising minutes = buyers pushing (<= 45% = sellers)
+
+
+def flow(stamps, q, a, b, last_minutes=30):
+    """Buying vs selling pressure estimate from 1-minute bars between a and b (epoch seconds).
+    Every trade has a buyer AND a seller; what we can see is who pushed: volume in minutes that closed higher
+    than the minute before (buyers paying up) vs lower (sellers accepting less); unchanged minutes count half.
+    Also the volume-weighted average price (VWAP) of the window. None when there is too little volume."""
+    closes, highs, lows, vols = (q.get(k) or [] for k in ("close", "high", "low", "volume"))
+    bars = [(t, c, h if h is not None else c, lo if lo is not None else c, v)
+            for t, c, h, lo, v in zip(stamps, closes, highs, lows, vols) if a <= t < b and c is not None and v]
+    if len(bars) < 5 or sum(x[4] for x in bars) <= 0:
+        return None
+
+    def share(rows, prev):
+        up = tot = 0.0
+        for _, c, _, _, v in rows:
+            if prev is not None:
+                up += v if c > prev else 0.5 * v if c == prev else 0
+                tot += v
+            prev = c
+        return up / tot if tot else None
+
+    end = bars[-1][0]
+    recent = [x for x in bars if x[0] > end - last_minutes * 60]
+    before = [x for x in bars if x[0] <= end - last_minutes * 60]
+    vol = sum(x[4] for x in bars)
+    vwap = sum((c + h + lo) / 3 * v for _, c, h, lo, v in bars) / vol
+    return {"up": share(bars, None), "recent": share(recent, before[-1][1] if before else None) if len(recent) >= 5 else None,
+            "vwap": vwap}
+
+
+def flow_line(stamps, q, a, b, price):
+    f = flow(stamps, q, a, b)
+    if not f or f["up"] is None:
+        return ""
+    up = f["up"]
+    lean = ("more <b>buying</b> pressure" if up >= FLOW_LEAN else "more <b>selling</b> pressure" if up <= 1 - FLOW_LEAN
+            else "balanced")
+    out = f"🔄 Flow (estimate): {up * 100:.0f}% of volume on rising minutes, {100 - up * 100:.0f}% on falling → {lean}"
+    if f["recent"] is not None and abs(f["recent"] - up) >= 0.1:
+        out += f" · last 30 min: {f['recent'] * 100:.0f}% rising"
+    if price and f["vwap"]:
+        out += (f" · price {'above' if price >= f['vwap'] else 'below'} today's average traded price "
+                f"${f['vwap']:,.2f}")
+    return out
+
+
 class VolumeWatcher:
     def __init__(self, get_json, send):
         self.get_json = get_json
@@ -261,6 +309,7 @@ class VolumeWatcher:
 
         day_chg = f" ({(price / prev_close - 1) * 100:+.1f}% today)" if prev_close else ""
         clock = datetime.fromtimestamp(now + off, timezone.utc).strftime("%H:%M")
+        q = ((chart.get("indicators") or {}).get("quote") or [{}])[0]
         msg = None
         if in_pre and not rec[2]:
             v = total(pre["start"], pre["end"])
@@ -269,6 +318,8 @@ class VolumeWatcher:
                 msg = (f"📊 <b>${ticker}</b> HEAVY PRE-MARKET VOLUME\n"
                        f"{_short(v)} shares by {clock} ET = <b>{v / avg * 100:.0f}%</b> of a normal full day "
                        f"({_short(avg)})\nPrice: ${price:,.2f}{day_chg}")
+                fl = flow_line(stamps, q, pre["start"], pre["end"], price)
+                msg += f"\n{fl}" if fl else ""
         if in_reg:
             minutes = (now - reg["start"]) / 60
             v = total(reg["start"], reg["end"])
@@ -280,6 +331,8 @@ class VolumeWatcher:
                     msg = (f"📊 <b>${ticker}</b> UNUSUAL VOLUME — <b>{pace:.1f}×</b> normal pace\n"
                            f"{_short(v)} shares by {clock} ET (normal full day: {_short(avg)})\n"
                            f"Price: ${price:,.2f}{day_chg}")
+                    fl = flow_line(stamps, q, reg["start"], reg["end"], price)
+                    msg += f"\n{fl}" if fl else ""
         changed = vs.get(ticker) != rec
         vs[ticker] = rec
         if msg:
