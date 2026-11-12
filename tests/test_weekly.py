@@ -40,6 +40,7 @@ class Message(unittest.TestCase):
         self.assertIn("Real-money rule", m)
         self.assertIn("News: 1 of 3 right · 1 wrong · 1 flat", m)
         self.assertIn("Public sale signals: 1 · 👥 insider clusters: 1", m)
+        self.assertNotIn("Buyout watch (", m)
         self.assertEqual(st["_wk"]["snap"]["bench"], 102.0)        # next week compares with this
 
     def test_without_practice(self):
