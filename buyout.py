@@ -83,6 +83,8 @@ SECTOR_SHORT = {"Healthcare": "HC", "Technology": "Tech", "Communication Service
 LIVE_SECONDS = 300          # candidate news / SEC / price checks
 GOOGLE_SECONDS = 1800       # per-candidate Google News search (Google blocks frequent automated searches)
 SPIKE_LEVELS = (0.10, 0.20)  # alert at +10%, again at +20% (same day)
+SPIKE_LOUD, SPIKE_LOUD_PACE = 0.15, 5   # with sound only from +15% on 5x normal volume
+TABLE_WEEKDAY = 4            # the candidate table is posted on Fridays (daily screens still update the list)
 SEEN_DAYS = 10
 
 BO_WORDS = re.compile(
@@ -117,6 +119,9 @@ JUNK = re.compile(r"(class action|shareholder alert|investors? (who|with) (lost|
                   r"levi & korsinsky|bragar|kahn swick|halper sadeh|stock (price|quote)|price target|"
                   r"shares (gap|rise|fall|drop|jump)|stock (rises|falls|jumps|drops))", re.I)
 SEC_FORM = re.compile(r"(13D|TO-T|TO-C|TO-I|14D-?9|PREM14|DEFM14|^425$)", re.I)
+# with sound: a bidder's tender offer, the target's answer, merger proxies / communications (13D stakes and
+# company buyback tenders TO-I stay quiet; owner 2026-11-12: "loud only for the strong stuff")
+LOUD_FORM = re.compile(r"(TO-T|TO-C|14D-?9|PREM14|DEFM14|^425$)", re.I)
 SEC_ITEMS = {"1.01": "material agreement", "3.03": "change to shareholder rights (poison pill?)",
              "5.01": "change in control", "1.02": "agreement terminated", "2.01": "acquisition / sale completed"}
 FORM_NAMES = {"13D": "activist / large holder stake (13D)", "TO-T": "TENDER OFFER by a buyer",
@@ -416,6 +421,37 @@ def table(rows, title, cands):
     return "\n".join(lines)
 
 
+def _close_on(closes, day):
+    """Close on `day` or the last trading day before it."""
+    ds = [d for d in closes if d <= day]
+    return closes[max(ds)] if ds else None
+
+
+def candidate_perf(cands, by, bench, today):
+    """Candidates vs the market since each was added (healthcare vs XBI, others vs IWM) -> summary dict or None."""
+    rows = []
+    for t, c in cands.items():
+        r = by.get(t)
+        if not r or not c.get("price") or c.get("since", today) >= today:
+            continue
+        b = "XBI" if (r.get("sector") or "") == "Healthcare" else "IWM"
+        closes = bench.get(b) or {}
+        b0, b1 = _close_on(closes, c["since"]), _close_on(closes, today)
+        if not b0 or not b1:
+            continue
+        rows.append((r["price"] / c["price"] - 1, b1 / b0 - 1))
+    if not rows:
+        return None
+    own = [x for x, _ in rows]
+    return {"n": len(rows), "avg": statistics.mean(own), "med": statistics.median(own),
+            "bench": statistics.mean(b for _, b in rows), "ahead": sum(1 for x, b in rows if x > b)}
+
+
+def perf_line(p):
+    return (f"⚖️ Candidates since added: average {p['avg'] * 100:+.1f}%, middle {p['med'] * 100:+.1f}% vs small caps / "
+            f"biotech over the same days {p['bench'] * 100:+.1f}% · {p['ahead']} of {p['n']} ahead of their market")
+
+
 # ---------------------------------------------------------------- watcher
 class BuyoutWatch:
     def __init__(self, send):
@@ -471,7 +507,14 @@ class BuyoutWatch:
             found = self._discover(rows)
         except Exception as e:
             log.warning("Buyout discovery failed: %s", type(e).__name__)
-        self.result = (rows, found, failed)
+        bench = {}
+        for b in ("IWM", "XBI"):   # small caps / biotech: what the candidates are compared with
+            try:
+                bars, _ = daily_chart(b)
+                bench[b] = {datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d"): cl for ts, cl, _ in bars}
+            except Exception:
+                pass
+        self.result = (rows, found, failed, bench)
 
     def _discover(self, rows):
         """Rumoured takeover targets from today's headlines -> [(row, why, link)]."""
@@ -650,7 +693,8 @@ class BuyoutWatch:
         self.thread.start()
 
     def _finish_screen(self, bo, first):
-        rows, found, failed = self.result
+        rows, found, failed, *more = self.result
+        bench = more[0] if more else {}
         self.result, self.thread = None, None
         cands = bo.setdefault("cands", {})
         today = extras.local_now().strftime("%Y-%m-%d")
@@ -697,22 +741,35 @@ class BuyoutWatch:
         shown = sorted([r for r in rows if (r["score"] >= MIN_SCORE - 1 and not r.get("auto"))
                         or (r["score"] >= MIN_SCORE and AUTO_MUST <= set(r["hits"])) or r["t"] in cands],
                        key=lambda r: (r["t"] not in cands, -r["score"], r["ev_s"] if r["ev_s"] is not None else 99))
-        title = "Buyout watch — first scan" if first else f"Buyout watch · {extras.local_now().strftime('%a %b %d')}"
+        wk = bo.setdefault("wk", {"added": [], "dropped": [], "found": []})
+        wk["added"] = list(dict.fromkeys(wk["added"] + ([] if first else added)))[-40:]
+        wk["dropped"] = list(dict.fromkeys(wk["dropped"] + dropped))[-40:]
+        wk["found"] = (wk["found"] + [[r["t"], r["score"], why[:100], link] for r, why, link in found])[-20:]
+        bo["perf"] = candidate_perf(cands, by, bench, today)
+        if not (first or extras.local_now().weekday() == TABLE_WEEKDAY):
+            log.info("Buyout screen: %d rows, %d candidates, %d added, %d dropped (table on Fridays)",
+                     len(rows), len(cands), len(added), len(dropped))
+            return
+        title = ("Buyout watch — first scan" if first else
+                 f"Buyout watch · week to {extras.local_now().strftime('%a %b %d')}")
         msg = table(shown[:max(25, len(cands) + 5)], title, cands)
-        if not first and added:
-            msg += "\n🆕 Added: " + ", ".join(f"<b>${t}</b>" for t in added)
-        if dropped:
-            msg += "\n➖ Dropped (no longer fits): " + ", ".join(f"${t}" for t in dropped)
-        for r, why, link in found:
-            line = f"\n🗞️ <b>${r['t']}</b> found in takeover news ({r['score']}/6)" + (f": {html.escape(why)}" if why else "")
+        if wk["added"]:
+            msg += "\n🆕 Added this week: " + ", ".join(f"<b>${t}</b>" for t in wk["added"])
+        if wk["dropped"]:
+            msg += "\n➖ Dropped this week (no longer fits): " + ", ".join(f"${t}" for t in wk["dropped"])
+        for t, sc, why, link in wk["found"]:
+            line = f"\n🗞️ <b>${t}</b> found in takeover news ({sc}/6)" + (f": {html.escape(why)}" if why else "")
             msg += line + (f' <a href="{html.escape(link)}">source</a>' if link else "")
         perf = [f"${t} {(by[t]['price'] / c['price'] - 1) * 100:+.0f}%" for t, c in cands.items()
                 if t in by and c.get("price") and c["since"] != today]
         if perf:
             msg += "\n📈 Since added: " + ", ".join(perf)
+        if bo["perf"]:
+            msg += "\n" + perf_line(bo["perf"])
         if failed:
             msg += f"\n<i>{failed} stock(s) had no data today.</i>"
         self.send(msg, True)
+        bo["wk"] = {"added": [], "dropped": [], "found": []}
         log.info("Buyout screen: %d rows, %d candidates, %d added, %d dropped", len(rows), len(cands), len(added), len(dropped))
 
     # -------- live checks for candidates
@@ -756,12 +813,12 @@ class BuyoutWatch:
                     continue
                 if not new("n:" + re.sub(r"\W+", "", h["title"].lower())[:90], "news:" + t):
                     continue
-                head = (f"🎯🚨 <b>${t}</b> TAKEOVER-TYPE NEWS" if hit else f"📰 <b>${t}</b> major news")
+                head = (f"🎯 <b>${t}</b> takeover-type news" if hit else f"📰 <b>${t}</b> major news")
                 when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""
                 self.send(f"{head}\n{html.escape(h['title'])}\n<i>{html.escape(h['source'] or 'news')}</i>{when}\n"
-                          f'<a href="{html.escape(h["link"])}">Open</a>', None if hit else True)
+                          f'<a href="{html.escape(h["link"])}">Open</a>', True)   # headlines: quiet (owner 2026-11-12)
                 # first line = what "🔎 Possibly related" shows later: the headline itself, not "major news"
-                extras.remember(t, f"{'🎯🚨' if hit else '📰'} ${t} {h['title']}", h["link"])
+                extras.remember(t, f"{'🎯' if hit else '📰'} ${t} {h['title']}", h["link"])
             if SEC_CONTACT:
                 try:
                     for it in self._sec(t):
@@ -797,7 +854,7 @@ class BuyoutWatch:
                 what = FORM_NAMES.get(key, form)
             else:
                 what = "8-K: " + "; ".join(SEC_ITEMS[x] for x in items)
-            loud = bool(m) or any(x in ("3.03", "5.01") for x in items)
+            loud = bool(LOUD_FORM.search(form)) or any(x in ("3.03", "5.01") for x in items)
             out.append({"acc": f["acc"], "loud": loud, "msg": f"🎯📄 <b>${t}</b> SEC: <b>{html.escape(what)}</b> ({html.escape(form)})\n"
                                                 f'<a href="{html.escape(f["link"])}">Open filing</a>'})
         return out
@@ -834,7 +891,8 @@ class BuyoutWatch:
         self.send(f"🎯⚡ <b>${t}</b> UNUSUAL MOVE {chg * 100:+.1f}% on <b>{pace:.1f}×</b> normal volume\n"
                   f"Price ${price:,.2f} (prev close ${prev:,.2f})\n"
                   + ("\n".join(rel) if rel else "No news found — moves like this preceded Esperion's buyout talks "
-                                                "(they can also be noise)."), None)
+                                                "(they can also be noise)."),
+                  not (chg >= SPIKE_LOUD and pace >= SPIKE_LOUD_PACE))
         return True
 
     # -------- main entry, called every poll

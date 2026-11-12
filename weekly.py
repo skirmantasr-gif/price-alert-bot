@@ -87,7 +87,13 @@ def message(state, now, data, paper=None, learn_names=None):
     day = (loc - timedelta(days=6)).strftime("%Y-%m-%d")
     sig = _count_since(state.get("_bo", {}).get("sig"), day)
     ins = _count_since(state.get("_insb", {}).get("posted"), day)
-    lines.append(f"📣 Public sale signals: {sig} · 👥 insider clusters: {ins} (not traded or scored yet)")
+    lines.append(f"📣 Public sale signals: {sig} · 👥 insider clusters: {ins} (scored in the 🎓 review)")
+    bo = state.get("_bo") or {}
+    p = bo.get("perf")
+    if p:
+        lines.append(f"🎯 Buyout watch ({len(bo.get('cands', {}))} candidates): average {p['avg'] * 100:+.1f}% since "
+                     f"added vs their market {p['bench'] * 100:+.1f}% · {p['ahead']} of {p['n']} ahead. Switch-off "
+                     "test mid-February: no deal, not ahead of the market → stop it.")
     lines.append("<i>One week is far too short to judge anything: watch the trend over 4–6 weeks. For a full "
                  "health check, ask Claude for /alerts-check. Not advice.</i>")
     wk["snap"] = snap or prev
