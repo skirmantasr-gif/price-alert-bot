@@ -180,6 +180,13 @@ WHERE = {
     "SZ": ("Shenzhen", "SEHKSZSE", "❌", "❌"),
 }
 NOT_ON_PLATFORMS = {"NS", "BO", "TW", "TWO", "KS", "KQ"}  # India, Taiwan, Korea: none of the three
+# Owner's choice (2026-11-12): post only contracts the owner can trade (IBKR, Trading 212 or Revolut).
+# China A-shares stay: IBKR reaches the eligible ones through Stock Connect.
+TRADABLE_ONLY = os.environ.get("CONTRACT_TRADABLE_ONLY", "true").lower() == "true"
+
+
+_UNTRADABLE_MARKETS = {"Taiwan", "South Korea", "India"}
+SCAN_MARKETS = [m for m in MARKETS if not (TRADABLE_ONLY and m[0] in _UNTRADABLE_MARKETS)]
 
 
 def tradable(sym):
@@ -702,7 +709,7 @@ class ContractScanner:
 
     @staticmethod
     def label():
-        return (f"contract wins by any small/mid cap: {len(MARKETS)} markets (US every {US_SECONDS // 60} min), "
+        return (f"contract wins by any small/mid cap: {len(SCAN_MARKETS)} markets (US every {US_SECONDS // 60} min), "
                 f"PR Newswire press releases (every {WIRE_SECONDS // 60} min), "
                 f"ASX + HKEX announcements (every {EXCHANGE_SECONDS // 60} min{'' if _pdf_ok() else ', headlines only'})"
                 f"{', Benzinga real-time news (every minute)' if alpaca.ON else ''}, "
@@ -758,7 +765,7 @@ class ContractScanner:
             market, label = MARKETS[0], "US"
             fetch = lambda: self.fetch(MARKETS[0])
         else:
-            market = MARKETS[self.turn % len(MARKETS)]
+            market = SCAN_MARKETS[self.turn % len(SCAN_MARKETS)]
             self.turn += 1
             label = market[0]
             fetch = lambda: self.fetch(market)
@@ -996,6 +1003,9 @@ class ContractScanner:
                 return False
             sym, name = found
         if sym.upper() in self.skip:
+            return False
+        if TRADABLE_ONLY and not tradable(sym):
+            log.info("Contract scan: not on IBKR / Trading 212 / Revolut; skipped")
             return False
         try:
             cap = self.yahoo.market_cap_usd(sym)
