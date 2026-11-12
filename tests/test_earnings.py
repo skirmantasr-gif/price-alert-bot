@@ -65,12 +65,21 @@ class Watch(unittest.TestCase):
         state = {"_cal": [["ZNTX", (today + timedelta(days=2)).isoformat(), "earnings", "Q3"],
                           ["ACMB", (today + timedelta(days=1)).isoformat(), "fda", "PDUFA"],
                           ["OTHR", (today + timedelta(days=1)).isoformat(), "earnings", "Q3"]]}
-        with mock.patch.object(w, "pattern", lambda t: []):
+        row = [{"d": "2026-08-18", "pre5": 0.01, "gap": -0.05, "day": -0.08, "next5": 0.02, "vr": 4.0}]
+        with mock.patch.object(w, "pattern", lambda t: row):
             self.assertTrue(w.check(state))
             w.last = float("-inf")
             self.assertFalse(w.check(state))
         self.assertEqual(len(sent), 1)
         self.assertIn("$ZNTX", sent[0])
+
+    def test_no_history_not_posted(self):
+        sent = []
+        w = earnings.EarningsWatch(lambda text, silent: sent.append(text) or True, ["ZNTX"], lambda t: 1)
+        state = {"_cal": [["ZNTX", (extras.local_now().date() + timedelta(days=1)).isoformat(), "earnings", "Q3"]]}
+        with mock.patch.object(w, "pattern", lambda t: []):
+            self.assertTrue(w.check(state))
+        self.assertEqual(sent, [])
 
 
 if __name__ == "__main__":

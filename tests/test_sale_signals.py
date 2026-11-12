@@ -46,7 +46,8 @@ def run_job(seen=()):
             mock.patch.object(buyout, "google", lambda q: HEADS), \
             mock.patch.object(buyout.time, "sleep", lambda s: None), \
             mock.patch.object(buyout, "yahoo_find", lambda c, h: (h, NAMES[h]) if h in NAMES else None), \
-            mock.patch.object(buyout, "score", row):
+            mock.patch.object(buyout, "score", row), \
+            mock.patch.object(buyout.BuyoutWatch, "_old_news", staticmethod(lambda *a: "")):
         w = buyout.BuyoutWatch(lambda *a: True)
         return w._signals_job(set(seen))
 
