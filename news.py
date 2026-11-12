@@ -533,6 +533,38 @@ def _raw_doc(doc):
     return re.sub(r"^xsl[^/]+/", "", doc or "")
 
 
+TAX_RE = re.compile(r"tax(es)? (withholding|obligation|liabilit\w*)|withh[oe]ld\w* (for |of )?(income )?tax|"
+                    r"sell[- ]to[- ]cover|(satisfy|cover|pay)\w* (the |any )?(applicable )?(income )?(tax|withholding)",
+                    re.I)
+
+
+TAX_SHARE = 0.6   # a same-day sale of at most this share of the vested / exercised shares counts as sell-to-cover
+
+
+def tax_check(tx, notes, plan):
+    """Is the selling in a Form 4 about taxes rather than a view on the stock?
+    -> (kind, text): 'withholding' = shares withheld by the company for tax (code F); 'sell_to_cover' = shares sold
+    to pay tax on stock that vested / options exercised (footnote says so, or a sale on the same day as a vesting /
+    exercise and no bigger than it); 'year_end' = a December sale (may be tax-loss / year-end planning; weak);
+    '' = no tax link found. Buys (code P) are never tax-driven."""
+    shares = [x for x in tx if not x["deriv"]]
+    sold = [x for x in shares if x["code"] == "S"]
+    if any(x["code"] == "F" for x in shares) and not sold:
+        return "withholding", "shares withheld by the company to pay tax on vesting stock - not a sale decision"
+    if sold and TAX_RE.search(notes or ""):
+        return "sell_to_cover", "the filing says the sale paid taxes on vesting / exercised stock"
+    vest = {}
+    for x in tx:
+        if x["code"] in ("A", "M", "F") and x["date"] and not (x["deriv"] and x["code"] == "A"):
+            vest[x["date"]] = vest.get(x["date"], 0) + x["shares"]
+    # sell-to-cover sells PART of what vested (~30-50% for the tax); selling everything the same day = cashing out
+    if sold and all(x["date"] in vest and x["shares"] <= TAX_SHARE * vest[x["date"]] for x in sold):
+        return "sell_to_cover", "sold part of the shares that vested / were exercised that day - typical sale to pay the tax"
+    if sold and not plan and all((x["date"] or "")[5:7] == "12" for x in sold):
+        return "year_end", "December sale - may be year-end tax planning (weak sign)"
+    return "", ""
+
+
 def parse_ownership(xml):
     root = ET.fromstring(xml)
     owners, roles = [], []
@@ -564,8 +596,10 @@ def parse_ownership(xml):
                        "date": (t.findtext("transactionDate/value") or "")[:10]})
     holds = sum(_num(h.findtext("postTransactionAmounts/sharesOwnedFollowingTransaction/value"))
                 for h in root.findall("nonDerivativeTable/nonDerivativeHolding"))
+    tax, tax_text = tax_check(tx, notes, plan)
     return {"type": (root.findtext("documentType") or "4").strip().split("/")[0], "owners": owners,
-            "role": ", ".join(dict.fromkeys(" ".join(r.split()) for r in roles)) or "insider", "plan": plan, "tx": tx, "holds": holds}
+            "role": ", ".join(dict.fromkeys(" ".join(r.split()) for r in roles)) or "insider", "plan": plan, "tx": tx,
+            "holds": holds, "tax": tax, "tax_text": tax_text}
 
 
 def parse_144(xml):
@@ -620,7 +654,7 @@ def format_insider(it, ins):
     if "P" in codes and "S" not in codes:
         head = "🟢👤 INSIDER BUY"
     elif "S" in codes and "P" not in codes:
-        head = "🔴👤 INSIDER SALE"
+        head = "⚪👤 INSIDER SALE (tax)" if ins.get("tax") in ("sell_to_cover", "withholding") else "🔴👤 INSIDER SALE"
     elif "P" in codes and "S" in codes:
         head = "🟡👤 INSIDER BUY + SALE"
     else:
@@ -652,6 +686,10 @@ def format_insider(it, ins):
         lines.append(f"Now owns: {_sh(_num(after))} sh")
     if ins["plan"]:
         lines.append("📋 Pre-planned trade (Rule 10b5-1)")
+    if ins.get("tax"):
+        lines.append(f"🧾 Tax check: {html.escape(ins['tax_text'])}")
+    elif "P" in codes:
+        lines.append("🧾 Tax check: open-market purchase with own money - not tax-driven")
     return lines
 
 

@@ -86,6 +86,8 @@ def rule_sec(it):
             who = "CEO" if "CEO" in ins["role"].upper() or "CHIEF EXECUTIVE" in ins["role"].upper() else "insider"
             return "up", conf, f"{who} bought {money(buy)} on the open market"
         if sell:
+            if ins.get("tax") in ("sell_to_cover", "withholding"):
+                return "neutral", "low", f"sale to pay taxes on vesting stock ({money(sell)}), not a view on the stock"
             if ins.get("plan"):
                 return "neutral", "low", f"pre-planned (10b5-1) sale of {money(sell)}"
             if sell >= 1_000_000:
