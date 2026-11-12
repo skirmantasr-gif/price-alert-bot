@@ -45,10 +45,19 @@ jobs:
           [ -f state.enc ] || exit 0
           for K in STATE_KEY OLD_PASS; do
             [ -n "${!K}" ] || continue
-            if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a -pass "env:$K" -in state.enc -out state.json 2>/dev/null \
-               && python3 -c "import json,sys; json.load(open('state.json'))" 2>/dev/null; then
-              echo "Saved state loaded (key: $K)"; exit 0
+            if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -a -pass "env:$K" -in state.enc -out state.raw 2>/dev/null; then
+              # compressed since 2026-11-12 (gzip magic 1f 8b); older saves are plain JSON
+              if [ "$(head -c 2 state.raw | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
+                gunzip -c state.raw > state.json 2>/dev/null || rm -f state.json
+              else
+                mv state.raw state.json
+              fi
+              rm -f state.raw
+              if [ -f state.json ] && python3 -c "import json,sys; json.load(open('state.json'))" 2>/dev/null; then
+                echo "Saved state loaded (key: $K)"; exit 0
+              fi
             fi
+            rm -f state.raw
           done
           echo "Saved state could not be decrypted (key changed?); starting fresh"; rm -f state.json
 
@@ -86,7 +95,8 @@ jobs:
         run: |
           [ -f state.json ] || exit 0
           STATE_PASS="${STATE_KEY:-$OLD_PASS}"; export STATE_PASS   # new key once the secret exists
-          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -a -pass env:STATE_PASS -in state.json -out state.enc
+          # compressed before encrypting (encrypted data can't be compressed; the repo keeps every version)
+          gzip -9 -c state.json | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -a -pass env:STATE_PASS -out state.enc
           git config user.name "price-alert-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state.enc
