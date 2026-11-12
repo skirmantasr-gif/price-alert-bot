@@ -121,6 +121,7 @@ TG_LIMIT = 3900  # Telegram max is 4096 chars; leave room for the header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 log = logging.getLogger("bot")
+log.addHandler(extras.FAILS)   # counts warnings per day for the ☀️ daily check
 
 
 # ---------------------------------------------------------------- HTTP helpers
@@ -636,7 +637,8 @@ def main():
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(
         HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on,
-        daily_extra=(lambda st: [mood.line(mood.get(st, http_get_json))]) if mood and HEARTBEAT_ROLE != "phone" else None)
+        daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st)])
+        if HEARTBEAT_ROLE != "phone" else None)
     reviewer = None
     if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
         learn.CHARTS = LAST_CHART
@@ -712,6 +714,7 @@ def main():
                 elif thirdparty_fail_since != "notified" and time.time() - thirdparty_fail_since > ERROR_ALERT_AFTER:
                     send_telegram("⚠️ Can't reach the third-party chat for 15+ min; will keep trying.")
                     thirdparty_fail_since = "notified"
+        changed |= extras.FAILS.flush_to(state)
         if changed:
             save_state(state)
         if MAX_RUNTIME and time.time() - started + POLL_SECONDS >= MAX_RUNTIME:

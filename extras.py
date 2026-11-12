@@ -438,6 +438,58 @@ def _parse_ts(text):
     return datetime.strptime(m.group(1), "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc).timestamp() if m else None
 
 
+# ---------------------------------------------------------------- failure counter (☀️ daily check line)
+class FailCounter(logging.Handler):
+    """Counts WARNING+ log lines per local day: 'Movers close job failed: HTTPError 403' -> key 'Movers close job
+    failed', last detail 'HTTPError 403'. In memory; flush() merges into state['_fail'] so restarts don't lose it."""
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.counts = {}   # day -> {key: [n, last detail]}
+
+    def emit(self, record):
+        try:
+            msg = record.getMessage()
+            key, _, detail = msg.partition(": ")
+            key = re.sub(r"\s+", " ", key)[:60]
+            day = local_now().strftime("%Y-%m-%d")
+            hit = self.counts.setdefault(day, {}).setdefault(key, [0, ""])
+            hit[0] += 1
+            hit[1] = detail[:60]
+        except Exception:
+            pass
+
+    def flush_to(self, state):
+        if not self.counts:
+            return False
+        st = state.setdefault("_fail", {})
+        for day, keys in self.counts.items():
+            d = st.setdefault(day, {})
+            for k, (n, det) in keys.items():
+                old = d.get(k, [0, ""])
+                d[k] = [old[0] + n, det or old[1]]
+        self.counts = {}
+        for day in sorted(st)[:-3]:
+            del st[day]
+        return True
+
+
+FAILS = FailCounter()
+
+
+def fail_line(state, top=6):
+    """☀️ daily check: what went wrong yesterday (local time), most frequent first."""
+    FAILS.flush_to(state)
+    y = (local_now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    keys = (state.get("_fail") or {}).get(y) or {}
+    if not keys:
+        return "✅ No errors logged yesterday"
+    items = sorted(keys.items(), key=lambda kv: -kv[1][0])
+    parts = [f"{html.escape(k)} ×{n}" + (f" ({html.escape(det)})" if det else "") for k, (n, det) in items[:top]]
+    more = f" · +{len(items) - top} more kinds" if len(items) > top else ""
+    return f"⚠️ <b>Problems yesterday</b> ({sum(v[0] for v in keys.values())}): " + " · ".join(parts) + more
+
+
 class Heartbeat:
     """GitHub writes its heartbeat into the bot's description, the phone into the bot's short description
     (both use the same Telegram bot), and each side warns when the other has gone quiet."""

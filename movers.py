@@ -534,6 +534,14 @@ class MoversWatch:
         lines.append("<i>Pre-market moves often fade or grow at the 9:30 open — not a buy signal. Most big winners "
                      "move on news nobody knew in advance.</i>")
         self.send("\n".join(lines), False)
+        try:   # 🎓: does a pre-market move carry on to the close? (scored only, never traded: paper.NOT_TRADED)
+            import learn
+            for side in ("up", "down"):
+                for r in res.get(side, [])[:SHOW_N + 2]:
+                    learn.record(state, "premarket", r["s"], side, "low", "rules",
+                                 f"pre-market {r['pct']:+.0f}%", r["price"])
+        except Exception as e:
+            log.warning("Movers pre-market learning record failed: %s", type(e).__name__)
         return True
 
     # -------- 🏆 close (background thread: network + AI; state passed in as copies)

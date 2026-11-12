@@ -560,9 +560,13 @@ def account(st, key, now, data):
 _state_ref = None
 
 
+# Scored in the 🎓 review but never traded: adding them would change the portfolios' rules mid-measurement.
+NOT_TRADED = {"salesignal", "insider", "premarket"}
+
+
 def record(sig):
     """Called by learn.record for every saved up/down call."""
-    if not ON or _state_ref is None:
+    if not ON or _state_ref is None or sig.get("src") in NOT_TRADED:
         return
     try:
         on_signal(_state_ref, sig)

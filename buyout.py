@@ -158,6 +158,7 @@ SIGNAL_SECONDS = int(os.environ.get("BUYOUT_SIGNAL_SECONDS", "3600"))
 SIGNAL_MAX_AGE_H = 30
 SIGNAL_REPEAT_DAYS = 14   # same stock + same kind of signal: once per two weeks
 SIGNAL_MAX_POSTS = 5      # per hourly scan
+SIGNAL_KEEP_DAYS = 30     # a signal-added candidate stays watched this long even with a low fingerprint
 SIGNAL_MIN_CAP, SIGNAL_MAX_CAP = 100e6, 20e9
 SIGNAL_QUERIES = [
     '("explore strategic alternatives" OR "exploring strategic alternatives" OR "review of strategic alternatives" '
@@ -561,7 +562,7 @@ class BuyoutWatch:
                                 "source": h["source"], "link": h["link"], "date": h["date"], "row": r})
         return out
 
-    def _finish_signals(self, bo, res, first):
+    def _finish_signals(self, bo, res, first, state=None):
         seen = bo.setdefault("sigseen", {})
         today = extras.local_now().strftime("%Y-%m-%d")
         for k in res["seen"]:
@@ -596,6 +597,14 @@ class BuyoutWatch:
                       "<i>Public sale signals came before many past buyouts, but most reviews end without a deal "
                       "or at a small premium. Not advice.</i>", None)
             extras.remember(x["t"], f"🎯📣 ${x['t']} {x['title']}", x["link"])
+            if state is not None:   # scored in the 🎓 review (not traded: paper.NOT_TRADED)
+                try:
+                    import learn
+                    px = _json(f"https://query1.finance.yahoo.com/v8/finance/chart/{x['t']}?range=1d&interval=1d"
+                               )["chart"]["result"][0]["meta"]["regularMarketPrice"]
+                    learn.record(state, "salesignal", x["t"], "up", "high", "rules", x["type"], px)
+                except Exception as e:
+                    log.warning("Sale signal learning record failed: %s", type(e).__name__)
         old = (datetime.now(timezone.utc) - timedelta(days=SIGNAL_REPEAT_DAYS + 1)).strftime("%Y-%m-%d")
         for d in (seen, sent):
             for k in [k for k, v in d.items() if v < old]:
@@ -649,6 +658,14 @@ class BuyoutWatch:
         added, dropped = [], []
         for t in list(cands):
             r = by.get(t)
+            c = cands[t]
+            if c.get("signal"):   # 📣 public sale signal: watched for SIGNAL_KEEP_DAYS whatever its fingerprint
+                try:
+                    age = (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(c["since"], "%Y-%m-%d")).days
+                except (KeyError, ValueError):
+                    age = 0
+                if age <= SIGNAL_KEEP_DAYS:
+                    continue
             if r and r["score"] < MIN_SCORE - 1:
                 dropped.append(t)
                 del cands[t]
@@ -839,7 +856,7 @@ class BuyoutWatch:
                 res, self.sig_thread, self.sig_result = self.sig_result, None, None
                 if res is not None:
                     try:
-                        changed |= self._finish_signals(bo, res, first=not bo.get("sig_init"))
+                        changed |= self._finish_signals(bo, res, first=not bo.get("sig_init"), state=state)
                         bo["sig_init"] = True
                     except Exception as e:
                         log.warning("Sale signals report failed: %s", type(e).__name__)

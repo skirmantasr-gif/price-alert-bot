@@ -31,6 +31,8 @@ POST_MAX = 3
 MAX_POSTS = 8              # clusters posted per scan (a busy window after earnings season)
 MAX_PAGES = 8              # 100 feed entries (~50 filings) per page
 MAX_FILINGS = 400          # per scan, so a backlog can't hold the thread for long
+HIST_MAX = 12              # earlier Form 4s read per company when it first shows a buy (catches clusters that
+HIST_COMPANIES = 15        # started before the bot was watching); companies looked up per scan
 FEED = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&owner=only&count=100&output=atom&start="
 ATOM = "{http://www.w3.org/2005/Atom}"
 TOP_ROLE = re.compile(r"\b(CEO|chief executive|CFO|chief financial|president)\b", re.I)
@@ -96,6 +98,15 @@ def parse_form4(xml):
             "role": ", ".join(dict.fromkeys(roles)) or "insider", "officer_or_director": od,
             "plan": (root.findtext("aff10b5One") or "").strip().lower() in ("1", "true") or "10b5-1" in notes,
             "buys": buys}
+
+
+def recent_form4(cik, days=CLUSTER_DAYS):
+    """Accession numbers of the issuer's Form 4 filings in the last `days` (SEC submissions list)."""
+    import json
+    r = json.loads(_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")).get("filings", {}).get("recent", {})
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    return [a for a, f, d in zip(r.get("accessionNumber", []), r.get("form", []), r.get("filingDate", []))
+            if f == "4" and d >= since]
 
 
 def filing_xml(cik, acc):
@@ -185,6 +196,18 @@ def message(tk, company, n, total, rows, cap=None, now_px=None, avg_px=None):
     return "\n".join(lines), loud
 
 
+def _score(state, tk, conf, text, price):
+    """Save the post as an UP call for the 🎓 review (scored only; paper.NOT_TRADED keeps it out of the practice
+    portfolios)."""
+    if state is None or not price:
+        return
+    try:
+        import learn
+        learn.record(state, "insider", tk, "up", conf, "rules", text, price)
+    except Exception as e:
+        log.warning("Insider learning record failed: %s", type(e).__name__)
+
+
 # ---------------------------------------------------------------- watcher
 class InsiderWatch:
     def __init__(self, send_main, send_other, watchlist):
@@ -202,8 +225,9 @@ class InsiderWatch:
         return (f"ON (all US stocks, every {SCAN_SECONDS // 60} min: 2+ officers/directors buying within "
                 f"{CLUSTER_DAYS} days, ≥ {_usd(CLUSTER_MIN_USD)})")
 
-    def _scan(self, seen):
-        """Background thread: new filings -> [(acc, parsed or None)]."""
+    def _scan(self, seen, hist_done=frozenset()):
+        """Background thread: new filings -> [(acc, parsed or None, issuer cik)], plus for each company with a new
+        officer/director buy that wasn't looked up lately, its other Form 4s of the last 14 days."""
         new, stop = [], False
         for page in range(MAX_PAGES):
             for acc, cik in feed_page(page * 100):
@@ -218,11 +242,29 @@ class InsiderWatch:
         out = []
         for acc, cik in new[:MAX_FILINGS]:
             try:
-                out.append((acc, parse_form4(filing_xml(cik, acc))))
+                out.append((acc, parse_form4(filing_xml(cik, acc)), cik))
             except Exception:
-                out.append((acc, None))
+                out.append((acc, None, cik))
             time.sleep(0.15)   # SEC: max 10 requests per second
-        return out
+        have = {a for a, _, _ in out} | set(seen)
+        looked = []
+        for cik in dict.fromkeys(c for _, f, c in out if f and f["buys"] and f["officer_or_director"]):
+            if cik in hist_done or len(looked) >= HIST_COMPANIES:
+                continue
+            looked.append(cik)
+            try:
+                accs = [a for a in recent_form4(cik) if a not in have][:HIST_MAX]
+            except Exception:
+                continue
+            time.sleep(0.15)
+            for acc in accs:
+                try:
+                    out.append((acc, parse_form4(filing_xml(cik, acc)), cik))
+                    have.add(acc)
+                except Exception:
+                    pass
+                time.sleep(0.15)
+        return {"filings": out, "looked": looked}
 
     def check(self, state):
         st = state.setdefault("_insb", {})
@@ -230,14 +272,15 @@ class InsiderWatch:
         if self.thread and not self.thread.is_alive():
             res, self.thread, self.result = self.result, None, None
             if res is not None:
-                changed |= self._finish(st, res)
+                changed |= self._finish(st, res, state)
         if not self.thread and time.monotonic() - self.last >= SCAN_SECONDS:
             self.last = time.monotonic()
             seen = set(st.get("seen", []))
+            hist = {int(k) for k in st.get("hist", {})}
 
             def run():
                 try:
-                    self.result = self._scan(seen)
+                    self.result = self._scan(seen, hist)
                 except Exception as e:
                     log.warning("Insider scan failed: %s", type(e).__name__)
                     self.result = None
@@ -245,7 +288,7 @@ class InsiderWatch:
             self.thread.start()
         return changed
 
-    def _finish(self, st, res):
+    def _finish(self, st, res, state=None):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         first = not st.get("init")
         st["init"] = True
@@ -253,8 +296,17 @@ class InsiderWatch:
         book = st.setdefault("book", {})
         posted = st.setdefault("posted", {})          # ticker -> [first day of cluster, owners when last posted, posts]
         names = st.setdefault("names", {})
+        if isinstance(res, list):   # older shape: [(acc, parsed)]
+            res = {"filings": res, "looked": []}
+        hist = st.setdefault("hist", {})
+        for cik in res.get("looked", []):
+            hist[str(cik)] = today
+        for k in [k for k, d in hist.items() if d < (datetime.strptime(today, "%Y-%m-%d")
+                                                       - timedelta(days=CLUSTER_DAYS)).strftime("%Y-%m-%d")]:
+            del hist[k]
+        res = res["filings"]
         touched, buys = set(), 0
-        for acc, f in res:
+        for acc, f, *_ in res:
             seen.append(acc)
             if f and add_buys(book, f, acc, today):
                 buys += 1
@@ -285,6 +337,7 @@ class InsiderWatch:
                 break
             (self.send_main if tk in self.watch else self.send_other)(text, not loud)
             sent += 1
+            _score(state, tk, "high" if loud else "low", f"{n} insiders bought {_usd(total)}", px)
         cut = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=CLUSTER_DAYS + 2)).strftime("%Y-%m-%d")
         for tk in list(book):
             book[tk] = [r for r in book[tk] if r[0] >= cut]
