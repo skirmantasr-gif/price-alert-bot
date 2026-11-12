@@ -90,6 +90,22 @@ BO_WORDS = re.compile(
     r"(alternatives|review)|(hires?|hired|working with|taps?) (advisers|advisors|bankers)|in talks|(takeover|buyout|acquisition|buy-?out) approach|approached (by|about)|received an? (takeover |buyout )?approach|"
     r"bid for|(per[- ]share|all[- ]cash) (offer|deal)|go(ing)? private|activist|stake in|13D|poison pill|"
     r"(shareholder|stockholder) rights (plan|agreement)|people familiar)\b", re.I)
+# "stake in" alone is usually a passive holder report ("State Street Reveals 4.7% Ownership Stake in X",
+# "A 6.72M-share stake in X") — not takeover news unless an activist or a push for change is named.
+ACTIVE = re.compile(
+    r"\b(activists?|13D|board seats?|proxy|nominat\w+|urg\w+|push\w*|letter to|elliott|starboard|icahn|trian|"
+    r"valueact|jana|third point|engine capital|ancora|pershing square|sachem head|corvex|legion partners|irenic|"
+    r"politan|mantle ridge|land (&|and) buildings|saba)\b", re.I)
+
+
+def bo_hit(title):
+    """BO_WORDS match, but not when the only match is "stake in" without any sign of an activist."""
+    hits = [m.group(0).lower() for m in BO_WORDS.finditer(title or "")]
+    if not hits or (all(h == "stake in" for h in hits) and not ACTIVE.search(title)):
+        return None
+    return hits[0]
+
+
 MAJOR = re.compile(
     r"\b(FDA|approv\w+|complete response|CRL|phase [23]|topline|endpoint|guidance|offering|private placement|"
     r"convertible|notes due|credit (agreement|facility)|term loan|royalty|refinanc\w+|going concern|delist\w*|"
@@ -553,17 +569,17 @@ class BuyoutWatch:
             for h in heads:
                 if (h["date"] and h["date"] < cut) or JUNK.search(h["title"]) or not mentions(h["title"] + " " + h["desc"], t, name):
                     continue
-                bo_hit = BO_WORDS.search(h["title"])
-                if not bo_hit and not MAJOR.search(h["title"]):
+                hit = bo_hit(h["title"])
+                if not hit and not MAJOR.search(h["title"]):
                     continue
                 if not new("n:" + re.sub(r"\W+", "", h["title"].lower())[:90], "news:" + t):
                     continue
-                head = (f"🎯🚨 <b>${t}</b> TAKEOVER-TYPE NEWS" if bo_hit else f"📰 <b>${t}</b> major news")
+                head = (f"🎯🚨 <b>${t}</b> TAKEOVER-TYPE NEWS" if hit else f"📰 <b>${t}</b> major news")
                 when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""
                 self.send(f"{head}\n{html.escape(h['title'])}\n<i>{html.escape(h['source'] or 'news')}</i>{when}\n"
-                          f'<a href="{html.escape(h["link"])}">Open</a>', None if bo_hit else True)
+                          f'<a href="{html.escape(h["link"])}">Open</a>', None if hit else True)
                 # first line = what "🔎 Possibly related" shows later: the headline itself, not "major news"
-                extras.remember(t, f"{'🎯🚨' if bo_hit else '📰'} ${t} {h['title']}", h["link"])
+                extras.remember(t, f"{'🎯🚨' if hit else '📰'} ${t} {h['title']}", h["link"])
             if SEC_CONTACT:
                 try:
                     for it in self._sec(t):

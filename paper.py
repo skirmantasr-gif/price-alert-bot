@@ -106,6 +106,8 @@ VERSION = 2  # 2 = real-price fills; older saved portfolios (filled at alert pri
 VOIDS = [
     ("2026-11-09-a", "f5612b5e835a2784", 1794009600, 1794355200,  # Nov 7 00:00 – Nov 11 00:00 UTC
      "wrong alert: the company was BUYING land, not winning a contract"),
+    ("2026-11-12-a", "f8b26f7a205c5c49", 1794355200, 1794528000,  # Nov 11 00:00 – Nov 13 00:00 UTC
+     "wrong alert: the contract was won by a different company with the same ticker"),
 ]
 
 

@@ -333,6 +333,12 @@ def _same_name(a, b):
     return bool(wa) and wa[0] in re.findall(r"\w+", b.lower())
 
 
+def _latin(s):
+    """True if most letters of s are basic Latin (names Yahoo can compare)."""
+    letters = [c for c in s or "" if c.isalpha()]
+    return bool(letters) and sum(c.isascii() for c in letters) >= 0.8 * len(letters)
+
+
 def _buyer_key(b):
     """'NASA' / 'National Aeronautics and Space Administration (NASA)' / 'U.S. Department of Defense' -> comparable key."""
     b = re.sub(r"\b(the|u\.?s\.?|us|united states|of|department|dept|government|gov|federal|and|&)\b", " ", (b or "").lower())
@@ -406,6 +412,12 @@ class Yahoo:
                     continue
                 nm = x.get("longname") or x.get("shortname") or ""
                 if q == company and not _same_name(company, nm):
+                    continue
+                # A ticker hint alone is not enough: "IDR" for Indra Group (Madrid) found Idaho Strategic (NYSE).
+                # Names in Latin letters must share their first distinctive word; local-script names
+                # (Chinese, Korean, Hindi...) can't be compared with Yahoo's English names, so the hint decides.
+                if q == hint and q != company and _latin(company) and not (
+                        _same_name(company, nm) or _same_name(nm, company)):
                     continue
                 found = (sym, nm or company)
                 break

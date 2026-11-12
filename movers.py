@@ -66,6 +66,9 @@ CAUSE_LABEL = {"earnings": "results", "guidance": "outlook", "fda_trial": "FDA /
                "management": "management", "product": "product / deal", "other": "other", "no_news": "no news found"}
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 NASDAQ_URL = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&offset=0&download=true"
+TRADER_URLS = ("https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",   # backup list: Nasdaq's screener
+               "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt")    # API refuses cloud servers
+CAP_URL = "https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/"
 SPARK_URL = "https://query2.finance.yahoo.com/v7/finance/spark?"
 CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
@@ -108,9 +111,84 @@ def nasdaq_rows():
     return out
 
 
+_NOT_STOCK = re.compile(r"\b(warrants?|rights?|units?|preferred|notes? due|debentures?|subordinated)\b", re.I)
+
+
+def trader_rows():
+    """Backup for nasdaq_rows(): every US-listed stock from Nasdaq Trader's symbol files (no prices, value or
+    sector; cap=None means "not known yet" and is looked up for the few stocks that make a list)."""
+    out = {}
+    for url in TRADER_URLS:
+        lines = _get(url, timeout=60).decode("utf-8", "replace").splitlines()
+        head = lines[0].split("|")
+        ni, ei, ti = head.index("Security Name"), head.index("ETF"), head.index("Test Issue")
+        for ln in lines[1:]:
+            c = ln.split("|")
+            if len(c) < len(head) or c[ei] == "Y" or c[ti] == "Y":
+                continue
+            sym = c[0].strip().upper()
+            if not re.fullmatch(r"[A-Z]{1,5}", sym) or _NOT_STOCK.search(c[ni]):
+                continue
+            out[sym] = {"s": sym, "name": _clean_name(c[ni]), "price": None, "pct": None, "vol": None, "cap": None,
+                        "sector": "", "industry": ""}
+    if len(out) < 1000:
+        raise ValueError("symbol files too short")
+    return list(out.values())
+
+
+def stock_list():
+    """(rows, has_prices): Nasdaq's screener when it answers (it blocks cloud servers such as GitHub's), else the
+    symbol files."""
+    try:
+        return nasdaq_rows(), True
+    except Exception as e:
+        log.info("Movers: Nasdaq screener unavailable (%s); using the Nasdaq Trader symbol files", _why(e))
+    return trader_rows(), False
+
+
+_CAPS = {}
+
+
+def market_cap(sym):
+    """Market value in USD from Yahoo (no login needed), cached for the run; None if unknown."""
+    if sym not in _CAPS:
+        try:
+            now = int(time.time())
+            j = json.loads(_get(CAP_URL + urllib.parse.quote(sym) + "?" + urllib.parse.urlencode(
+                {"type": "trailingMarketCap", "period1": now - 40 * 86400, "period2": now + 86400})))
+            vals = [v for v in j["timeseries"]["result"][0].get("trailingMarketCap") or [] if v and v.get("reportedValue")]
+            _CAPS[sym] = float(vals[-1]["reportedValue"]["raw"]) if vals else None
+        except Exception:
+            _CAPS[sym] = None
+    return _CAPS[sym]
+
+
+def cap_ok(rows, n):
+    """The first n rows whose market value is >= MIN_CAP, looking up unknown values (cap=None) one by one."""
+    out = []
+    for r in rows:
+        if len(out) >= n:
+            break
+        if r.get("cap") is None:
+            r["cap"] = market_cap(r["s"])
+            time.sleep(0.1)
+        if r["cap"] is not None and r["cap"] >= MIN_CAP:
+            out.append(r)
+    return out
+
+
+def _why(e):
+    """Error type + the site that failed (never the full address)."""
+    host = urllib.parse.urlsplit(getattr(e, "filename", None) or getattr(e, "url", None) or "").hostname
+    code = getattr(e, "code", None)
+    return type(e).__name__ + (f" {code}" if code else "") + (f" from {host}" if host else "")
+
+
 def tradeable(r, min_dollar_vol=MIN_DOLLAR_VOL):
-    return (r["price"] is not None and r["pct"] is not None and r["vol"] is not None and r["cap"] is not None
-            and r["price"] >= MIN_PRICE and r["cap"] >= MIN_CAP and r["price"] * r["vol"] >= min_dollar_vol)
+    """Junk filter. cap=None (value not looked up yet) passes here; cap_ok() checks it for the shortlist."""
+    return (r["price"] is not None and r["pct"] is not None and r["vol"] is not None
+            and r["price"] >= MIN_PRICE and (r["cap"] is None or r["cap"] >= MIN_CAP)
+            and r["price"] * r["vol"] >= min_dollar_vol)
 
 
 def quotes(symbols):
@@ -390,7 +468,7 @@ class MoversWatch:
             try:
                 self.result = fn(*args)
             except Exception as e:
-                log.warning("Movers %s job failed: %s", job, type(e).__name__)
+                log.warning("Movers %s job failed: %s", job, _why(e))
                 self.result = None
         self.job = job
         self.thread = threading.Thread(target=run, daemon=True)
@@ -398,12 +476,14 @@ class MoversWatch:
 
     # -------- 🌅 pre-market (background thread: network only, no state)
     def _pre_job(self, day):
-        rows = [r for r in nasdaq_rows() if tradeable(r, PRE_MIN_YDAY_DOLLAR_VOL)]   # yesterday's numbers
+        rows, priced = stock_list()
+        if priced:   # the screener's numbers are yesterday's: skip stocks that barely traded
+            rows = [r for r in rows if tradeable(r, PRE_MIN_YDAY_DOLLAR_VOL)]
         by = {r["s"]: r for r in rows}
         syms = list(by)
         snap = quotes_all(syms)
         moved = [{**by[s], "pct": q["pre"][0] * 100, "price": q["pre"][1]} for s, q in snap.items()
-                 if s in by and q.get("pre") and q["pre"][2] >= PRE_MIN_BARS]
+                 if s in by and q.get("pre") and q["pre"][2] >= PRE_MIN_BARS and q["pre"][1] >= MIN_PRICE]
         log.info("Movers pre-market: %d stocks checked, %d with pre-market trades", len(syms), len(moved))
         if not moved:
             return {"day": day, "up": [], "down": [], "checked": len(syms)}
@@ -411,7 +491,7 @@ class MoversWatch:
         out = {"day": day, "checked": len(syms), "traded": len(moved)}
         for side, up in (("up", True), ("down", False)):
             keep = []
-            for r in top(moved, PRE_CANDIDATES, up):
+            for r in cap_ok(top(moved, PRE_CANDIDATES * 3, up), PRE_CANDIDATES):
                 try:
                     mins = pre_minutes(r["s"])
                 except Exception:
@@ -460,8 +540,8 @@ class MoversWatch:
     def _close_job(self, day, bo_cands, pre_today, yday):
         if not traded_today(day):
             return {"day": day, "closed": True}
-        rows = nasdaq_rows()   # the list of stocks + value + sector (its prices are the previous day's close)
-        pool = [r for r in rows if r["cap"] and r["cap"] >= MIN_CAP and (r["price"] or 0) >= MIN_PRICE * 0.5]
+        rows, priced = stock_list()   # stocks + value + sector (the screener's prices are the previous day's close)
+        pool = [r for r in rows if not priced or (r["cap"] and r["cap"] >= MIN_CAP and (r["price"] or 0) >= MIN_PRICE * 0.5)]
         pool_syms = {r["s"] for r in pool} | set(self.tickers)
         live = quotes_all(sorted(pool_syms))
         by = {}
@@ -474,7 +554,7 @@ class MoversWatch:
         rows = list(by.values())
         good = [r for r in rows if tradeable(r)]
         wl = [by[t] for t in self.tickers if t in by and by[t]["pct"] is not None]
-        up, down = top(good, DIARY_N, True), top(good, DIARY_N, False)
+        up, down = cap_ok(top(good, DIARY_N * 4, True), DIARY_N), cap_ok(top(good, DIARY_N * 4, False), DIARY_N)
         if not up and not down:
             return {"day": day, "closed": True}
         open_utc = datetime.now(NY).replace(hour=9, minute=30, second=0, microsecond=0).astimezone(timezone.utc)
@@ -524,7 +604,7 @@ class MoversWatch:
             for i, r in enumerate(res[side]):
                 ai = r.get("ai") or {}
                 e = {"d": day, "s": r["s"], "n": r["name"], "sec": r["sector"], "side": side, "rank": i + 1,
-                     "p": round(r["pct"], 1), "px": r["price"], "cap": round(r["cap"] / 1e6),
+                     "p": round(r["pct"], 1), "px": r["price"], "cap": round((r["cap"] or 0) / 1e6),
                      "cause": ai.get("cause", "unknown"), "why": _reason_text(ai) if ai else "",
                      "sched": bool(ai.get("scheduled")), "symp": (ai.get("sympathy_with") or "")[:6].upper(),
                      "f": r.get("f", {}), "news_pre": r.get("news_pre", 0), "bo": r.get("bo", False),
@@ -563,7 +643,7 @@ class MoversWatch:
         txt = html.escape(why) if why else ("no news found" if ai else "no headline found")
         if link:
             txt = f'<a href="{html.escape(link)}">{txt}</a>'
-        extra = f" · {_cap(r['cap'])}" + (f" · traded {r['pre_min']} min" if pre and r.get("pre_min") else "")
+        extra = (f" · {_cap(r['cap'])}" if r.get("cap") else "") + (f" · traded {r['pre_min']} min" if pre and r.get("pre_min") else "")
         tag = f" [{cause}]" if cause and cause not in ("no news found",) and why else ""
         return f"• <b>${r['s']}</b> {r['pct']:+.1f}% ${_fp(r['price'])}{extra} — {txt}{html.escape(tag)}"
 
