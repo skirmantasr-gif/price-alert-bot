@@ -57,6 +57,10 @@ try:
 except ImportError:  # phone copy without earnings.py
     earnings = None
 try:
+    import insiders
+except ImportError:  # phone copy without insiders.py
+    insiders = None
+try:
     import movers
 except ImportError:  # phone copy without movers.py
     movers = None
@@ -585,6 +589,9 @@ def main():
         if earnings and HEARTBEAT_ROLE != "phone" and earnings.ON:
             extra += "\nEarnings patterns 📊: " + (earnings.EarningsWatch.label() if earnings.EarningsWatch.enabled()
                                                    else "OFF (needs SEC_CONTACT)")
+        if insiders and HEARTBEAT_ROLE != "phone" and insiders.ON:
+            extra += "\nInsider cluster buys 👥: " + (insiders.InsiderWatch.label() if insiders.InsiderWatch.enabled()
+                                                     else "OFF (needs SEC_CONTACT)")
         if movers and HEARTBEAT_ROLE != "phone" and movers.MoversWatch.enabled():
             extra += "\nWinners & losers 🏆: " + movers.MoversWatch.label() + (
                 " → contracts channel" if CONTRACTS_CHAT_ID != CHAT_ID else "")
@@ -616,6 +623,9 @@ def main():
                 if movers and HEARTBEAT_ROLE != "phone" and movers.MoversWatch.enabled() else None)
     earn_watch = (earnings.EarningsWatch(send_telegram, TICKERS, news_sec_cik)
                   if earnings and HEARTBEAT_ROLE != "phone" and earnings.EarningsWatch.enabled() else None)
+    ins_watch = (insiders.InsiderWatch(send_telegram, lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID),
+                                       TICKERS)
+                 if insiders and HEARTBEAT_ROLE != "phone" and insiders.InsiderWatch.enabled() else None)
     outlook = (insights.HourlyInsights(TICKERS, LAST_CHART, volume, send_telegram)
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(
@@ -646,6 +656,8 @@ def main():
             checks.append(("Winners & losers", mv_watch.check))
         if earn_watch:
             checks.append(("Earnings patterns", earn_watch.check))
+        if ins_watch:
+            checks.append(("Insider clusters", ins_watch.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if practice:
