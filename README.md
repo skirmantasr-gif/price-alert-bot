@@ -21,6 +21,8 @@ A personal stock-watching bot that sends Telegram messages. It runs 24/7 for fre
 | 🧪 Practice portfolios | Pretend €100 per portfolio trading the bot's own calls at real market prices (spread, fees, stops, profit lock), vs the S&P 500, with 📉 worst drop; the daily report checks the owner's 💶 real-money rule (30+ closed trades and ahead of the S&P; stop at −15% from the top) | `paper.py` | practice |
 | 🌡️ Market mood | Risk-on / neutral / defensive from 20 days of QQQ, QQQ vs XLP, IWM, XBI. Shown in the daily check + practice statements. The 🌡️ practice portfolio skips buys while it is defensive, to *measure* whether that helps | `mood.py` | main, practice |
 | 📅 Weekly review | Sundays 10:00 LT: practice portfolios (week change, trades closed, vs S&P), the 💶 real-money rule, this week's checked up/down calls, counts of 📣 sale signals and 👥 insider clusters | `weekly.py` | main |
+| 🔎 Context check | Before alerts are sent: same-day market/sector move (price alerts that are "mostly the market" go quiet), 💧 dilution risk (cash runway, share-sale filings), ⏳ under-$1 listing clock, 🍂 tax-loss season, 🩳 heavy short selling (FINRA), 💵 estimated ex-dividend day, 📅 Fed decisions / jobs report in the daily check | `context.py` | all |
+| 🎲 Options | Expected move to the monthly expiry, max pain, call/put walls, put/call; in alerts near expiry, the daily check, earnings notes, the outlook; quiet unusual-activity alerts | `options.py` | main |
 | ☀️ Daily check | Morning status: GitHub bot + phone forwarder alive, yesterday's counts, market mood, earnings / FDA dates for the next 14 days | `extras.py` | main |
 
 A second copy runs on an old Android phone (Termux) to forward third-party chat posts; GitHub and the phone

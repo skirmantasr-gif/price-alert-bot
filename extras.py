@@ -341,7 +341,13 @@ class VolumeWatcher:
                 opt = options.near_expiry(ticker) if watchlist.TICKERS else ""
             except Exception:
                 opt = ""
-            msg = "\n".join([msg] + ([opt] if opt else []) + related(ticker))
+            try:
+                import context
+                ctx = context.lines(ticker, change=(price / prev_close - 1) if prev_close else None, price=price,
+                                    peer=watchlist.PEERS.get(ticker)) if watchlist.TICKERS else []
+            except Exception:
+                ctx = []
+            msg = "\n".join([msg] + ctx + ([opt] if opt else []) + related(ticker))
             if self.send(msg):
                 bump(state, "volume")
                 log.info("Volume alert sent")

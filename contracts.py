@@ -1060,6 +1060,13 @@ class ContractScanner:
             big = False  # can't be bought on the owner's platforms: inform quietly
         it = {**it, "age_h": age_h, "first_h": first_h, "first_src": first_src, "traded": traded}
         text = self.format(it, r, sym, name, usd, cap, ratio, big)
+        try:
+            import context
+            ctx = context.lines(sym, market=False)
+            if ctx:
+                text += "\n" + "\n".join(ctx)
+        except Exception:
+            pass
         if self.send(text, not big):
             sent.append([sym, round(usd / 1e6, 2), today, _buyer_key(r.get("buyer"))])
             if learn and self.state is not None:

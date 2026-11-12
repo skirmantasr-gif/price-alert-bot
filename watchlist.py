@@ -35,5 +35,6 @@ NEWS_EXCLUDE = {t.upper() for t in CFG.get("news_exclude", [])} if CFG else set(
 IMPORTANT_ONLY = {t.upper() for t in CFG.get("important_only", [])} if CFG else set(_csv("NEWS_IMPORTANT_ONLY"))
 COMPANIES = {t: {"q": s.get("search") or [t], "match": s.get("match") or [t]} for t, s in STOCKS.items()}
 GOV_NAMES = {t: s["gov"] for t, s in STOCKS.items() if s.get("gov")}
+PEERS = {t: s["peer"] for t, s in STOCKS.items() if s.get("peer")}   # what the stock moves with, e.g. "BTC-USD"
 TIMEZONE = CFG.get("timezone") or os.environ.get("STATUS_TZ") or "UTC"
 STATUS_TIME = CFG.get("status_time") or os.environ.get("STATUS_TIME") or "08:00"

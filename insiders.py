@@ -339,6 +339,13 @@ class InsiderWatch:
             except Exception:
                 px = None
             text, loud = message(tk, names.get(tk, tk), n, total, rows, market_cap(tk), px, avg)
+            try:
+                import context
+                ctx = context.lines(tk, market=False)
+                if ctx:
+                    text += "\n" + "\n".join(ctx)
+            except Exception:
+                pass
             if sent >= MAX_POSTS:
                 log.info("Insider scan: more clusters than %d in one scan; rest skipped", MAX_POSTS)
                 break

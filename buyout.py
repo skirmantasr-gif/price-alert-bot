@@ -678,9 +678,15 @@ class BuyoutWatch:
                 facts.append(f"buyout fingerprint {r['score']}/6")
                 facts.append(f"{r['off_high'] * 100:+.0f}% vs 1-year high")
             watch = (" · watching it now (daily table + live checks)" if x["t"] in cands else "")
+            try:
+                import context
+                ctx = context.lines(x["t"], market=False)
+            except Exception:
+                ctx = []
             self.send(f"🎯📣 <b>${x['t']}</b> PUBLIC SALE SIGNAL — {SIGNAL_TYPES[x['type']]}\n"
                       f"{html.escape(x['title'])}\n<i>{html.escape(x['source'] or 'news')}</i>{when}\n"
                       + (" · ".join(facts) + watch + "\n" if facts or watch else "")
+                      + ("".join(c + "\n" for c in ctx))
                       + f'<a href="{html.escape(x["link"])}">Open</a>\n'
                       "<i>Public sale signals came before many past buyouts, but most reviews end without a deal "
                       "or at a small premium. Not advice.</i>", None)

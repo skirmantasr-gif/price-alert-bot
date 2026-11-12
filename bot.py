@@ -69,6 +69,10 @@ try:
 except ImportError:  # phone copy without options.py
     options = None
 try:
+    import context
+except ImportError:  # phone copy without context.py
+    context = None
+try:
     import movers
 except ImportError:  # phone copy without movers.py
     movers = None
@@ -544,8 +548,13 @@ def check(ticker, state, errors, volume=None):
                f"Price: <b>${fmt_price(price)}</b> (was ${fmt_price(ref)} at last alert)"
                f"{day}\nSession: {session}")
         opt = options.near_expiry(ticker) if options and HEARTBEAT_ROLE != "phone" else ""
-        msg = "\n".join([msg] + ([opt] if opt else []) + extras.related(ticker))
-        if send_telegram(msg):
+        day_chg = price / prev_close - 1 if prev_close else None
+        ctx = (context.lines(ticker, change=day_chg, price=price, peer=watchlist.PEERS.get(ticker))
+               if context and HEARTBEAT_ROLE != "phone" else [])
+        quiet = bool(context and HEARTBEAT_ROLE != "phone" and session == "regular"
+                     and context.mostly_market(ticker, day_chg, watchlist.PEERS.get(ticker)))
+        msg = "\n".join([msg] + ctx + ([opt] if opt else []) + extras.related(ticker))
+        if send_telegram(msg, True if quiet else None):
             state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
             extras.bump(state, "price")
             log.info("Price alert sent")
@@ -643,7 +652,8 @@ def main():
     heartbeat = extras.Heartbeat(
         HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on,
         daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st)]
-                     + (options.daily_lines(TICKERS) if options else []))
+                     + (options.daily_lines(TICKERS) if options else [])
+                     + (context.daily_lines(TICKERS) if context else []))
         if HEARTBEAT_ROLE != "phone" else None)
     reviewer = None
     if learn and HEARTBEAT_ROLE != "phone" and learn.Reviewer.enabled() and TICKERS:
@@ -655,6 +665,9 @@ def main():
         practice = learn.paper.Tracker(http_get_json, lambda text, silent=True: send_telegram(text, silent, PAPER_CHAT_ID or None),
                                        live_trades=bool(PAPER_CHAT_ID))
         practice.attach(state)  # before any alert is sent, so the first calls are traded too
+    if context and HEARTBEAT_ROLE != "phone" and context.ON:   # fill the context caches before the first alert
+        import threading
+        threading.Thread(target=lambda: context.daily_lines(TICKERS), daemon=True).start()
     opt_watch = (options.UnusualWatch(send_telegram, TICKERS)
                  if options and HEARTBEAT_ROLE != "phone" and options.UnusualWatch.enabled() else None)
     wk_review = (weekly.WeeklyReview(send_telegram, practice)

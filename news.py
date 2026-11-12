@@ -884,6 +884,13 @@ class NewsWatcher:
                 changed = True
                 continue
             msg = self.format(it)
+            try:
+                import context
+                ctx = context.lines(it["ticker"], market=False) if watchlist.TICKERS else []
+                if ctx:
+                    msg += "\n" + "\n".join(ctx)
+            except Exception:
+                pass
             if not self.send(msg):
                 log.warning("News: Telegram send failed, will retry next poll")
                 break

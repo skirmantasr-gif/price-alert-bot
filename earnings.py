@@ -206,6 +206,13 @@ class EarningsWatch:
                 break
             text = message(tk, iso, rows)
             try:
+                import context
+                ctx = context.lines(tk, market=False, once=False)
+                if ctx:
+                    text += "\n" + "\n".join(ctx)
+            except Exception:
+                pass
+            try:
                 import options
                 o = options.get(tk)
                 if o and o.get("move_pct") and o["exp"] >= iso:
