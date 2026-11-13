@@ -699,7 +699,8 @@ class NewsWatcher:
         self.tickers = [t for t in tickers]
         self.send = send
         self.recent_titles = []   # (ticker, words) of headlines sent/seen this run, for fuzzy dedup
-        self.fail = {}            # source -> first failure time
+        self.fail = {}            # source:ticker -> first failure time
+        self.fail_notified = set()  # sources already warned about (once per source, not per ticker)
         self.queue = []
         self.last_google = 0.0
         self.last_contract_search = 0.0
@@ -715,17 +716,23 @@ class NewsWatcher:
         return ", ".join(s) + ". Impact guesses: " + (f"AI ({impact.AI_MODEL})" if impact.ai_enabled() else "keyword rules")
 
     def _fetch(self, name, fn, *args):
+        # Failures are tracked per source+ticker ("Google:ORCL"), but the warning is sent once per
+        # source ("Google"), else one blocked source spams a message for every ticker.
+        base = name.split(":")[0]
+        notified = self.fail_notified
         try:
             res = fn(*args)
             self.fail.pop(name, None)
+            if base in notified and not any(k.split(":")[0] == base for k in self.fail):
+                notified.discard(base)   # fully recovered; may warn again next time
             return res
         except Exception as e:
             first = self.fail.setdefault(name, time.time())
-            log.warning("News source %s failed: %s", name.split(":")[0],  # no ticker in the public log
+            log.warning("News source %s failed: %s", base,  # no ticker in the public log
                         type(e).__name__ if not hasattr(e, "code") else f"HTTP {e.code}")
-            if first != "notified" and time.time() - first > 3600:
-                self.send(f"⚠️ News source <b>{html.escape(name.split(':')[0])}</b> failing for 1h+; will keep trying.")
-                self.fail[name] = "notified"
+            if base not in notified and time.time() - first > 3600:
+                self.send(f"⚠️ News source <b>{html.escape(base)}</b> failing for 1h+; will keep trying.")
+                notified.add(base)
             return None
 
     def check(self, state, fast=False):
