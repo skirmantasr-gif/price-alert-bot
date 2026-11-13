@@ -29,11 +29,12 @@ class Checks(unittest.TestCase):
         fl = [((today - timedelta(days=20)).isoformat(), "424B5"), ((today - timedelta(days=200)).isoformat(), "S-3")]
         with mock.patch.object(context, "cash_burn", lambda s: (80e6, 40e6)), \
                 mock.patch.object(context, "filings", lambda s: fl), \
+                mock.patch.object(context, "market_cap", lambda s: 300e6), \
                 mock.patch.object(context, "sector", lambda s: "Healthcare"):
             line = context.dilution_line("ZNTX")
         self.assertIn("HIGH", line)
         self.assertIn("cash for about 2 quarters", line)
-        self.assertIn("1 share-sale filing (424B)", line)
+        self.assertIn("1 share sale (424B prospectus)", line)
         with mock.patch.object(context, "cash_burn", lambda s: (900e6, 10e6)), \
                 mock.patch.object(context, "filings", lambda s: []), mock.patch.object(context, "sector", lambda s: "Healthcare"):
             self.assertEqual(context.dilution_line("ZNTX"), "")            # 90 quarters of cash: fine
@@ -41,6 +42,29 @@ class Checks(unittest.TestCase):
                 mock.patch.object(context, "filings", lambda s: []), \
                 mock.patch.object(context, "sector", lambda s: "Financial Services"):
             self.assertEqual(context.dilution_line("ZNTX"), "")            # lenders: measure doesn't apply
+
+    def test_dilution_bonds_repeats_and_big_companies(self):
+        """ORCL Nov 2026: 2x 424B2 (bonds) + one stock offering filed twice (preliminary + final) -> 1 sale, medium."""
+        d = lambda n: (date.today() - timedelta(days=n)).isoformat()
+        fl = [(d(9), "424B5", "d181425d424b5.htm"), (d(9), "424B2", "d181336d424b2.htm"),
+              (d(11), "424B5", "d181425d424b5.htm"), (d(11), "424B2", "d181336d424b2.htm")]
+        with mock.patch.object(context, "cash_burn", lambda s: (20e9, 1e9)), \
+                mock.patch.object(context, "filings", lambda s: fl), \
+                mock.patch.object(context, "sector", lambda s: "Technology"):
+            with mock.patch.object(context, "market_cap", lambda s: 396e9):
+                line = context.dilution_line("ORCL")
+            self.assertTrue(line.startswith("💧 Dilution risk medium"), line)   # big company: never HIGH
+            self.assertIn("1 share sale (424B prospectus)", line)                # repeat + bonds not counted
+            with mock.patch.object(context, "market_cap", lambda s: 500e6):
+                self.assertIn("HIGH", context.dilution_line("ORCL"))              # same filings, small company
+            with mock.patch.object(context, "market_cap", lambda s: None):
+                self.assertIn("HIGH", context.dilution_line("ORCL"))              # no market value: keep HIGH
+        bonds = [(d(5), "424B2", "a.htm"), (d(6), "424B2", "b.htm")]
+        with mock.patch.object(context, "cash_burn", lambda s: (900e6, 10e6)), \
+                mock.patch.object(context, "filings", lambda s: bonds), \
+                mock.patch.object(context, "market_cap", lambda s: 5e9), \
+                mock.patch.object(context, "sector", lambda s: "Technology"):
+            self.assertEqual(context.dilution_line("ZNTX"), "")                  # bonds only: no share sale
 
     def test_listing(self):
         with mock.patch.object(context, "daily", lambda s: {"closes": closes([1.2] * 10 + [0.8] * 35), "divs": []}):
