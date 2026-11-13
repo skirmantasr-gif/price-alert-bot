@@ -40,6 +40,7 @@ MARKET_SHARE = 1.5       # a stock move within 1.5x its sector's same-direction 
 SHORT_HEAVY = 0.60
 TAXLOSS_DROP = -0.40
 DIV_DAYS = 5
+LARGE_CAP = 10e9          # dilution risk shown at most "medium" above this market value
 MAX_BYTES = 20_000_000
 _c = {}                  # cache key -> (time, value)
 
@@ -111,7 +112,7 @@ def sector_etf(sym, peer=None):
 
 
 def filings(sym):
-    """SEC forms of the last ~year: [(date, form)] (needs SEC_CONTACT)."""
+    """SEC forms of the last ~year: [(date, form, primary document)] (needs SEC_CONTACT)."""
     def f():
         import news
         cik = news.sec_cik(sym)
@@ -120,8 +121,24 @@ def filings(sym):
         r = json.loads(_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json",
                             {"User-Agent": f"price-alert-bot {SEC_CONTACT}", "Accept": "application/json"}))
         r = r.get("filings", {}).get("recent", {})
-        return [(d, f) for d, f in zip(r.get("filingDate", []), r.get("form", []))]
+        return list(zip(r.get("filingDate", []), r.get("form", []), r.get("primaryDocument", [])))
     return _cached("sec:" + sym, 12 * 3600, f) if SEC_CONTACT else None
+
+
+def market_cap(sym):
+    """Market value in $ from Yahoo's public statements data, or None."""
+    def f():
+        now = int(time.time())
+        d = json.loads(_get("https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/"
+                            + urllib.parse.quote(sym) + "?" + urllib.parse.urlencode(
+                                {"type": "trailingMarketCap", "period1": now - 30 * 86400, "period2": now + 86400}),
+                            timeout=15))
+        for r in d["timeseries"]["result"]:
+            v = [x["reportedValue"]["raw"] for x in (r.get("trailingMarketCap") or []) if x]
+            if v:
+                return v[-1]
+        return None
+    return _cached("mcap:" + sym, 12 * 3600, f)
 
 
 def cash_burn(sym):
@@ -229,9 +246,12 @@ def dilution_line(sym):
     cb = cash_burn(sym)
     fl = filings(sym) or []
     today = date.today()
-    recent = lambda days, forms: [f for d, f in fl if d >= (today - timedelta(days=days)).isoformat()
-                                  and f.upper().startswith(forms)]
-    sales = recent(90, ("424B",))
+    recent = lambda days, forms: [x for x in fl if x[0] >= (today - timedelta(days=days)).isoformat()
+                                  and x[1].upper().startswith(forms)]
+    # 424B2 = notes / bonds (debt, no new shares). A preliminary and final prospectus of the same offering
+    # share one document name -> count offerings, not filings.
+    sales = {(x[2] if len(x) > 2 and x[2] else x[0] + x[1]) for x in recent(90, ("424B",))
+             if not x[1].upper().startswith("424B2")}
     shelf = recent(365, ("S-3", "S-1", "F-3"))
     bits, level = [], 0
     if cb and cb[0] and cb[1]:
@@ -240,12 +260,16 @@ def dilution_line(sym):
             bits.append(f"cash for about {q:.0f} quarter{'s' * (round(q) != 1)} at the recent burn")
             level = max(level, 2 if q < 4 else 1)
     if sales:
-        bits.append(f"{len(sales)} share-sale filing{'s' * (len(sales) != 1)} (424B) in 90 days")
+        bits.append(f"{len(sales)} share sale{'s' * (len(sales) != 1)} (424B prospectus) in 90 days")
         level = max(level, 2)
     elif shelf and level:
         bits.append("a registered share-sale program (S-3/S-1) is ready")
     if not level:
         return ""
+    if level == 2:
+        cap = market_cap(sym)
+        if cap and cap >= LARGE_CAP:   # a share sale is a few % at most for a big company
+            level = 1
     return f"💧 Dilution risk {'HIGH' if level == 2 else 'medium'}: " + " · ".join(bits)
 
 
