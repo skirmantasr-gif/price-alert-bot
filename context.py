@@ -257,7 +257,8 @@ def dilution_line(sym):
     if cb and cb[0] and cb[1]:
         q = cb[0] / cb[1]
         if q < 8:
-            bits.append(f"cash for about {q:.0f} quarter{'s' * (round(q) != 1)} at the recent burn")
+            bits.append("cash for less than 1 quarter at the recent burn" if q < 1 else
+                        f"cash for about {q:.0f} quarter{'s' * (round(q) != 1)} at the recent burn")
             level = max(level, 2 if q < 4 else 1)
     if sales:
         bits.append(f"{len(sales)} share sale{'s' * (len(sales) != 1)} (424B prospectus) in 90 days")

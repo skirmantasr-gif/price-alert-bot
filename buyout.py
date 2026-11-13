@@ -113,7 +113,7 @@ def bo_hit(title):
 MAJOR = re.compile(
     r"\b(FDA|approv\w+|complete response|CRL|phase [23]|topline|endpoint|guidance|offering|private placement|"
     r"convertible|notes due|credit (agreement|facility)|term loan|royalty|refinanc\w+|going concern|delist\w*|"
-    r"bankrupt\w*|chapter 11|layoffs?|restructur\w+|CEO|chief executive|resign\w*|appoint\w*|licens\w+|"
+    r"bankrupt\w*|chapter 11|layoffs?|restructur\w+|CEO|CFO|chief (executive|financial) officer|licens\w+|"
     r"partnership|collaboration|acquires?|acquisition|divest\w*|recall|warning letter)\b", re.I)
 JUNK = re.compile(r"(class action|shareholder alert|investors? (who|with) (lost|losses)|law firm|rosen|pomerantz|"
                   r"levi & korsinsky|bragar|kahn swick|halper sadeh|stock (price|quote)|price target|"
@@ -383,20 +383,34 @@ def google(q):
 
 def _name_words(name):
     words = [w for w in re.findall(r"[A-Za-z][A-Za-z&\-]+", name or "")
-             if w.lower() not in {"inc", "corp", "corporation", "ltd", "plc", "holdings", "the", "co", "company",
+             if w.lower() not in _NAME_SKIP]
+    return words[:1]
+
+
+_NAME_SKIP = {"inc", "corp", "corporation", "ltd", "plc", "holdings", "the", "co", "company",
                                   "pharmaceuticals", "pharmaceutical", "pharma", "therapeutics", "biosciences",
                                   "bio", "biopharma", "sciences", "life", "group", "international", "global", "technologies",
                                   "technology", "systems", "industries", "energy", "resources", "financial", "brands",
                                   "solutions", "networks", "entertainment", "communications", "america", "american",
-                                  "united", "national", "first", "new", "holding", "partners", "services"}]
-    return words[:1]
+                                  "united", "national", "first", "new", "holding", "partners", "services",
+                                  "health", "healthcare", "medical", "limited", "labs", "laboratories"}
 
 
 def mentions(text, t, name):
-    if re.search(r"(?<![A-Za-z$])\$?" + re.escape(t) + r"(?![A-Za-z])", text):
+    # Ticker: 3+ letters as a word; 1-2 letters only written as $BW / (BW) / NYSE: BW ("BW LPG" is another company).
+    tick = (r"(?<![A-Za-z$])\$?" + re.escape(t) + r"(?![A-Za-z])" if len(t) >= 3 else
+            r"(\$" + re.escape(t) + r"|\(" + re.escape(t) + r"\)|(NYSE|NASDAQ|Nasdaq)(:|\s)\s*" + re.escape(t) + r")(?![A-Za-z])")
+    if re.search(tick, text):
         return True
-    # name word as a word on its own: not inside a compound like "Bandwidth-First" (2026-11-09 IPTV article for BAND)
-    return any(re.search(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", text, re.I) for w in _name_words(name) if len(w) >= 4)
+    # Name words as words on their own: not inside a compound like "Bandwidth-First" (2026-11-09 IPTV article for BAND).
+    # Two-word names need BOTH words: "Aurora" alone matched a copper mine and another company's AURORA trial
+    # (2026-11-13, Aurora Cannabis).
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z&\-]+", name or "")
+             if len(w) >= 3 and w.lower() not in ("and", "the", "of")]
+    words = [w for w in words if w in _name_words(name) or w.lower() not in _NAME_SKIP][:2]
+    if not words or len(words[0]) < 4:
+        return False
+    return all(re.search(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", text, re.I) for w in words)
 
 
 # ---------------------------------------------------------------- formatting
