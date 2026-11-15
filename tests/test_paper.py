@@ -54,7 +54,7 @@ class Fills(unittest.TestCase):
         paper.on_signal(st, sig("BBB", c="medium", src="outlook"))
         self.assertNotIn("AAA", st["pf"]["strong"]["pending"])    # strong = high only
         self.assertIn("AAA", st["pf"]["likely"]["pending"])
-        self.assertIn("BBB", st["pf"]["outlook"]["pending"])
+        self.assertNotIn("BBB", st["pf"]["outlook"]["pending"])   # 🧭 outlook paused 2026-11-15: no new trades
         self.assertNotIn("BBB", st["pf"]["likely"]["pending"])    # outlook calls stay in their own portfolio
 
     def test_max_open_positions(self):
