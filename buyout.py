@@ -111,10 +111,18 @@ def bo_hit(title):
 
 
 MAJOR = re.compile(
-    r"\b(FDA|approv\w+|complete response|CRL|phase [23]|topline|endpoint|guidance|offering|private placement|"
+    r"\b(FDA|approv\w+|complete response|CRL|phase [23]|topline|endpoint|guidance|private placement|"
     r"convertible|notes due|credit (agreement|facility)|term loan|royalty|refinanc\w+|going concern|delist\w*|"
     r"bankrupt\w*|chapter 11|layoffs?|restructur\w+|CEO|CFO|chief (executive|financial) officer|licens\w+|"
-    r"partnership|collaboration|acquires?|acquisition|divest\w*|recall|warning letter)\b", re.I)
+    r"(strategic|research|development|licens\w+|commerciali[sz]ation|exclusive|global) (collaboration|partnership)|"
+    r"(collaboration|partnership) (agreement|deal)|enters? (into )?(an? )?(\w+ )?(collaboration|partnership)|"
+    r"acquires?|acquisition|divest\w*|recall|warning letter)\b", re.I)
+# "offering" alone matched "Wendy's Guyana offering customers a chance to win" (2026-11-15): only share / debt sales.
+OFFERING = re.compile(r"\b((public|direct|secondary|stock|share|equity|underwritten|proposed|follow-on|"
+                      r"at-the-market|ATM|million|billion|[\d.]+[MB]) offering|offering of)\b", re.I)
+# Not news about the company: insider Form 4 lines (👥 insider scan covers buys), opinion questions
+# ("Should ... Investors?", "Might Change The Case For Investing In ...") — 2026-11-15 noise.
+NOT_MAJOR = re.compile(r"(\bForm 4\b|\?\s*$|case for investing|should .{0,60}investors)", re.I)
 JUNK = re.compile(r"(class action|shareholder alert|investors? (who|with) (lost|losses)|law firm|rosen|pomerantz|"
                   r"levi & korsinsky|bragar|kahn swick|halper sadeh|stock (price|quote)|price target|"
                   r"shares (gap|rise|fall|drop|jump)|stock (rises|falls|jumps|drops))", re.I)
@@ -411,6 +419,44 @@ def mentions(text, t, name):
     if not words or len(words[0]) < 4:
         return False
     return all(re.search(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", text, re.I) for w in words)
+
+
+_LEGAL = {"inc", "corp", "corporation", "ltd", "plc", "co", "company", "sa", "nv", "ag", "se", "llc", "lp"}
+
+
+def in_title(title, t, name):
+    """The company itself is named in the headline (stricter than mentions()). A name with one distinctive
+    word must look like the company: "Wendy's", "Omnicom Group", "Bandwidth Inc", or the word opening the
+    headline; not "Memory Bandwidth," / "Daraxonrasib Journey From" / "Versus Surgery" (2026-11-15 noise)."""
+    tick = (r"(?<![A-Za-z$])\$?" + re.escape(t) + r"(?![A-Za-z])" if len(t) >= 3 else
+            r"(\$" + re.escape(t) + r"|\(" + re.escape(t) + r"\)|(NYSE|NASDAQ|Nasdaq)(:|\s)\s*" + re.escape(t) + r")(?![A-Za-z])")
+    if re.search(tick, title):
+        return True
+    toks = re.findall(r"[A-Za-z][A-Za-z&\-]+", name or "")
+    words = [w for w in toks if len(w) >= 3 and w.lower() not in ("and", "the", "of")]
+    words = [w for w in words if w in _name_words(name) or w.lower() not in _NAME_SKIP][:2]
+    if not words or len(words[0]) < 4:
+        return False
+    if len(words) >= 2:
+        return mentions(title, t, name)
+    w = words[0]
+    i = toks.index(w)
+    nxt = toks[i + 1] if i + 1 < len(toks) and toks[i + 1].lower() not in _LEGAL else None
+    after = r"(['\u2019]s\b|\s+(Inc|Corp|Ltd|Co|plc)\b|\s*\(" + (r"|\s+" + re.escape(nxt) + r"\b" if nxt else "") + ")"
+    return bool(re.search(r"(?<![\w-])" + re.escape(w) + after, title, re.I)
+                or re.match(r"\s*" + re.escape(w) + r"\b", title, re.I))
+
+
+def major(title, t, name):
+    """📰 major news: a big-event word, the company named in the headline, and not opinion / Form 4 noise."""
+    return (bool(MAJOR.search(title) or OFFERING.search(title)) and not NOT_MAJOR.search(title)
+            and in_title(title, t, name))
+
+
+def news_key(title):
+    """Same story from several editions ("... By Investing.com", "... - Investing.com India") = one key."""
+    title = re.sub(r"\s+(by|-|\u2013|\|)\s+[\w .&]{2,40}$", "", title.strip(), flags=re.I)
+    return re.sub(r"\W+", "", title.lower())[:90]
 
 
 # ---------------------------------------------------------------- formatting
@@ -874,9 +920,9 @@ class BuyoutWatch:
                 if (h["date"] and h["date"] < cut) or JUNK.search(h["title"]) or not mentions(h["title"] + " " + h["desc"], t, name):
                     continue
                 hit = bo_hit(h["title"])
-                if not hit and not MAJOR.search(h["title"]):
+                if not hit and not major(h["title"], t, name):
                     continue
-                if not new("n:" + re.sub(r"\W+", "", h["title"].lower())[:90], "news:" + t):
+                if not new("n:" + news_key(h["title"]), "news:" + t):
                     continue
                 head = (f"🎯 <b>${t}</b> takeover-type news" if hit else f"📰 <b>${t}</b> major news")
                 when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""

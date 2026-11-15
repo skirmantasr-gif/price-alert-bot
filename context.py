@@ -41,6 +41,7 @@ SHORT_HEAVY = 0.60
 TAXLOSS_DROP = -0.40
 DIV_DAYS = 5
 LARGE_CAP = 10e9          # dilution risk shown at most "medium" above this market value
+BURN_CAP_SHARE = 0.20   # HIGH from burn only if a year of burn is >= 20% of market value
 MAX_BYTES = 20_000_000
 _c = {}                  # cache key -> (time, value)
 
@@ -259,7 +260,12 @@ def dilution_line(sym):
         if q < 8:
             bits.append("cash for less than 1 quarter at the recent burn" if q < 1 else
                         f"cash for about {q:.0f} quarter{'s' * (round(q) != 1)} at the recent burn")
-            level = max(level, 2 if q < 4 else 1)
+            hi = q < 4
+            if hi:   # a year of burn that is small next to the company's value is not a big share sale:
+                cap = market_cap(sym)   # Centuri ($2.2B, ~$29M/q capex-driven burn) was flagged HIGH (2026-11-15)
+                if cap and 4 * cb[1] < BURN_CAP_SHARE * cap:
+                    hi = False
+            level = max(level, 2 if hi else 1)
     if sales:
         bits.append(f"{len(sales)} share sale{'s' * (len(sales) != 1)} (424B prospectus) in 90 days")
         level = max(level, 2)

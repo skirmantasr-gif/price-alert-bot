@@ -508,20 +508,48 @@ def in_open_hold(ticker, now=None):
     return bool(start) and start <= now < start + OPEN_HOLD
 
 
+def feed_hours(now=None):
+    """Weekday 04:00–20:00 New York = when Yahoo has pre-market / regular / after-hours prices."""
+    try:
+        from zoneinfo import ZoneInfo
+        n = datetime.fromtimestamp(now or time.time(), ZoneInfo("America/New_York"))
+    except Exception:
+        return True
+    return n.weekday() < 5 and 4 <= n.hour < 20
+
+
+def feed_report(errors, send=None, now=None):
+    """ONE message when the price feed fails for 15+ min (all stocks together) and one when it is back
+    (2026-11-15: a Sunday Yahoo 429 sent 15 'can't fetch' + 15 'recovered' messages). Outside trading hours
+    nothing is said: nobody needs prices then, and an outage still going at 04:00 NY is reported then."""
+    send = send or send_telegram
+    now = now or time.time()
+    rec = errors.pop("_recovered", {})
+    if rec:
+        send("✅ Price feed recovered: " + " · ".join(f"${t} ${fmt_price(p)}" for t, p in rec.items()))
+    due = [t for t, e in errors.items() if not t.startswith("_") and not e["notified"]
+           and now - e["since"] > ERROR_ALERT_AFTER]
+    if not due or not feed_hours(now):
+        return
+    first = errors[due[0]].get("err", "")
+    send(f"⚠️ Can't fetch prices for 15+ min ({len(due)} stock{'s' * (len(due) != 1)}: "
+         + ", ".join(f"<b>${t}</b>" for t in due) + f"): {html.escape(first)}")
+    for t in due:
+        errors[t]["notified"] = True
+
+
 def check(ticker, state, errors, volume=None):
     try:
         price, prev_close, session = fetch_price(ticker)
     except Exception as e:
         first = errors.setdefault(ticker, {"since": time.time(), "notified": False})
+        first["err"] = str(e)
         log.warning("Price fetch failed for a ticker: %s", type(e).__name__)  # no ticker in the public log
-        if not first["notified"] and time.time() - first["since"] > ERROR_ALERT_AFTER:
-            send_telegram(f"⚠️ Can't fetch <b>${ticker}</b> price for 15+ min: {html.escape(str(e))}")
-            first["notified"] = True
-        return False
+        return False   # the warning is sent by feed_report(), one message for all stocks
 
     err = errors.pop(ticker, None)
     if err and err["notified"]:
-        send_telegram(f"✅ <b>${ticker}</b> price feed recovered: ${fmt_price(price)}")
+        errors.setdefault("_recovered", {})[ticker] = price
     changed = False
     if volume and session != "stale" and ticker in LAST_CHART:
         try:
@@ -678,7 +706,8 @@ def main():
         changed = False
         for t in TICKERS:
             changed |= check(t, state, errors, volume)
-        checks = [("Halt check", halts.check), ("Watchdog", heartbeat.check)]
+        feed_report(errors)
+        checks =[("Halt check", halts.check), ("Watchdog", heartbeat.check)]
         if bo_watch:
             checks.append(("Buyout watch", bo_watch.check))
         if outlook:

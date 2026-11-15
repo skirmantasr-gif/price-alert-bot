@@ -10,6 +10,7 @@ Posted when a company reaches 2 different buyers and >= CLUSTER_MIN_USD in total
 joins (max POST_MAX per company per cluster). Loud with 3+ buyers, a CEO/CFO among them, or >= $1M in total.
 Watchlist stocks -> main channel, all other stocks -> the contracts channel. GitHub only (needs SEC_CONTACT)."""
 import html
+import json
 import logging
 import os
 import re
@@ -133,12 +134,32 @@ def price_now(tk):
     return float(j["chart"]["result"][0]["meta"]["regularMarketPrice"])
 
 
-def market_cap(tk):
+def sec_shares(cik):
+    """Latest shares outstanding from the company's own SEC cover page (dei), or None."""
     try:
-        import movers
-        return movers.market_cap(tk)
+        d = json.loads(_get(f"https://data.sec.gov/api/xbrl/companyconcept/CIK{int(cik):010d}"
+                            f"/dei/EntityCommonStockSharesOutstanding.json", timeout=20))
+        rows = sorted((x["end"], x["val"]) for x in d["units"]["shares"])
+        return float(rows[-1][1]) if rows else None
     except Exception:
         return None
+
+
+def market_cap(tk, price=None, cik=None):
+    """Yahoo's market value, checked against SEC shares x price: Yahoo said NEXGEL was worth $2.1M while
+    SEC showed 9.7M shares x $3.88 = $38M (2026-11-15). If they differ 3x+ (or Yahoo has none), SEC wins."""
+    try:
+        import movers
+        cap = movers.market_cap(tk)
+    except Exception:
+        cap = None
+    if price and cik and SEC_CONTACT:
+        sh = sec_shares(cik)
+        if sh:
+            sec = sh * price
+            if not cap or not (1 / 3 <= cap / sec <= 3):
+                return sec
+    return cap
 
 
 # ---------------------------------------------------------------- cluster logic (pure)
@@ -319,6 +340,8 @@ class InsiderWatch:
                 buys += 1
                 touched.add(f["ticker"])
                 names[f["ticker"]] = f["company"][:60]
+                if _:
+                    st.setdefault("ciks", {})[f["ticker"]] = _[0]
         del seen[:-3000]
         sent = 0
         for tk in sorted(touched):
@@ -338,7 +361,7 @@ class InsiderWatch:
                 px = price_now(tk)
             except Exception:
                 px = None
-            text, loud = message(tk, names.get(tk, tk), n, total, rows, market_cap(tk), px, avg)
+            text, loud = message(tk, names.get(tk, tk), n, total, rows, market_cap(tk, px, st.get("ciks", {}).get(tk)), px, avg)
             try:
                 import context
                 ctx = context.lines(tk, market=False)
