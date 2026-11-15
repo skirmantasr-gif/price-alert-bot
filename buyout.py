@@ -930,6 +930,11 @@ class BuyoutWatch:
                           f'<a href="{html.escape(h["link"])}">Open</a>', True)   # headlines: quiet (owner 2026-11-12)
                 # first line = what "🔎 Possibly related" shows later: the headline itself, not "major news"
                 extras.remember(t, f"{'🎯' if hit else '📰'} ${t} {h['title']}", h["link"])
+                try:
+                    import scoreboard
+                    scoreboard.note("bo_takeover" if hit else "bo_major", t, "up")
+                except Exception:
+                    pass
             if SEC_CONTACT:
                 try:
                     for it in self._sec(t):
@@ -1004,6 +1009,11 @@ class BuyoutWatch:
                   + ("\n".join(rel) if rel else "No news found — moves like this preceded Esperion's buyout talks "
                                                 "(they can also be noise)."),
                   not (chg >= SPIKE_LOUD and pace >= SPIKE_LOUD_PACE))
+        try:
+            import scoreboard
+            scoreboard.note("bo_spike", t, "up", price)
+        except Exception:
+            pass
         return True
 
     # -------- main entry, called every poll

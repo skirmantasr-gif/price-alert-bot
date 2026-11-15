@@ -88,6 +88,10 @@ try:
 except ImportError:  # phone copy without learn.py
     learn = None
 import watchlist
+try:
+    import scoreboard   # 📊 does each kind of alert beat the S&P? (optional, like the other add-ons)
+except ImportError:
+    scoreboard = None
 from news import NewsWatcher
 from news import sec_cik as news_sec_cik
 
@@ -586,6 +590,8 @@ def check(ticker, state, errors, volume=None):
         if send_telegram(msg, True if quiet else None):
             state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
             extras.bump(state, "price")
+            if scoreboard:
+                scoreboard.note("price", ticker, "up" if up else "down", price, state=state)
             log.info("Price alert sent")
             return True
     return changed
@@ -701,6 +707,14 @@ def main():
                  if options and HEARTBEAT_ROLE != "phone" and options.UnusualWatch.enabled() else None)
     wk_review = (weekly.WeeklyReview(send_telegram, practice)
                  if weekly and HEARTBEAT_ROLE != "phone" and weekly.WeeklyReview.enabled() else None)
+    board = None
+    if scoreboard and HEARTBEAT_ROLE != "phone" and scoreboard.Board.enabled():
+        scoreboard.attach(state, lambda tk: fetch_price(tk)[0])
+        try:
+            import learn as _learn
+            board = scoreboard.Board(lambda tk: _learn._closes(http_get_json, tk), send_telegram)
+        except Exception:
+            board = None
     started = time.time()
     while True:
         battery.check()
@@ -725,6 +739,8 @@ def main():
             checks.append(("Options activity", lambda st: opt_watch.check(st, options.market_open_ny())))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
+        if board:
+            checks.append(("Scoreboard", board.check))
         if practice:
             checks.append(("Practice portfolio", practice.check))
         for name, fn in checks:

@@ -350,6 +350,12 @@ class VolumeWatcher:
             msg = "\n".join([msg] + ctx + ([opt] if opt else []) + related(ticker))
             if self.send(msg):
                 bump(state, "volume")
+                try:
+                    import scoreboard
+                    if prev_close:
+                        scoreboard.note("volume", ticker, "up" if price >= prev_close else "down", price, state=state)
+                except Exception:
+                    pass
                 log.info("Volume alert sent")
         return changed
 

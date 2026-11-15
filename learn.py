@@ -84,6 +84,11 @@ def record(state, src, ticker, direction, conf, by, text="", price=None):
                 "p0": round(float(p0), 4), "x": _clean(text, 110)})
     if paper:
         paper.record(lst[-1])
+    try:
+        import scoreboard
+        scoreboard.note(src, ticker, direction, p0, state=state)
+    except Exception:
+        pass
     cut = time.time() - KEEP_DAYS * 86400
     lst[:] = [p for p in lst if p["t"] >= cut][-MAX_PRED:]
 

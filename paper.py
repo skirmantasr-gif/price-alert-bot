@@ -87,6 +87,9 @@ PORTFOLIOS = {
     "calm": ("🌡️ Mood-filtered", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] != "outlook"
              and s.get("mood") != "defensive"),
 }
+# Portfolios that no longer open new trades (still scored; open trades close by their normal rules).
+# 🧭 outlook: profit factor 0.31 and -1.5% vs S&P +2.5% after its first week (owner 2026-11-15).
+PAUSED = {"outlook": "2026-11-15"}
 CLONE = {"calm": "likely"}  # a portfolio added later starts as an exact copy of this one (fair comparison)
 MOOD_GATED = {"calm": "likely"}  # buys skipped only because of the mood are logged ("⏭️ Skipped")
 SRC = {"news": "news", "sec": "SEC", "gov": "US contract", "contract": "contract win", "outlook": "outlook"}
@@ -251,7 +254,7 @@ def on_signal(st, sig, now=None):
                 _log(pf, now, a="cancel", tk=tk, why="DOWN call before the order filled")
         else:
             size = SIZE_STRONG_EUR if sig["c"] == "high" else SIZE_EUR
-            if (rule(sig) and tk not in pf["open"] and tk not in pf["pending"]
+            if (rule(sig) and key not in PAUSED and tk not in pf["open"] and tk not in pf["pending"]
                     and len(pf["open"]) + len(pf["pending"]) < MAX_OPEN and pf["cash"] >= size - 1e-9):
                 pf["cash"] -= size  # reserved until the order fills
                 pf["pending"][tk] = {"t": int(now), "src": sig["src"], "c": sig["c"], "alert_p": sig.get("p0"), "eur": size}
@@ -519,7 +522,7 @@ def report(st, now, data, title):
 
 def account(st, key, now, data):
     """Broker-style view of one portfolio: total value, cash, money in stocks, each holding."""
-    name = PORTFOLIOS[key][0]
+    name = PORTFOLIOS[key][0] + (f" (paused since {PAUSED[key]}: no new trades)" if key in PAUSED else "")
     pf = st["pf"][key]
     cash = pf["cash"]
     reserved = sum(o.get("eur", SIZE_EUR) for o in pf.get("pending", {}).values())
