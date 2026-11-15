@@ -79,7 +79,7 @@ class Watch(unittest.TestCase):
     def run_finish(self, st, res, watch=("ZNTX",)):
         main, other = [], []
         w = insiders.InsiderWatch(lambda t, s: main.append((t, s)), lambda t, s: other.append((t, s)), watch)
-        with mock.patch.object(insiders, "price_now", lambda tk: 5.0), mock.patch.object(insiders, "market_cap", lambda tk: 3e8), \
+        with mock.patch.object(insiders, "price_now", lambda tk: 5.0), mock.patch.object(insiders, "market_cap", lambda tk, *a: 3e8), \
                 mock.patch.object(insiders, "datetime", wraps=insiders.datetime) as dt:
             dt.now.return_value = insiders.datetime(2026, 11, 12, 12, tzinfo=insiders.timezone.utc)
             w._finish(st, res)
