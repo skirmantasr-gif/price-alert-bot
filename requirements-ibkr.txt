@@ -1,0 +1,6 @@
+# IBKR paper mirror (ibkr.py, server only). Install: pip install --require-hashes --only-binary :all: -r requirements-ibkr.txt
+ib_async==2.1.0 --hash=sha256:f6d8b991bdbd6dd38e700c61b3dced06ebe0f14be4e5263e2ef10ba10b88d434
+aeventkit==2.1.0 --hash=sha256:962d43f79e731ac43527f2d0defeed118e6dbaa85f1487f5667540ebb8f00729
+nest_asyncio==1.6.0 --hash=sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c
+tzdata==2025.3 --hash=sha256:06a47e5700f3081aab02b2e513160914ff0694bce9947d6b76ebd6bf57cfc5d1
+numpy==2.5.4 --hash=sha256:fbde6962867ee75b48b0ee29b2b9372ec5d617799dbaf38e82dc0596f2f7738a  # needed by aeventkit (Linux x86_64, Python 3.12 wheel)

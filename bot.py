@@ -638,6 +638,12 @@ def main():
                 extra += ("\nPractice portfolio 🧪: ON (pretend €100 per strategy" +
                           (", hourly trade updates while the market is open + daily report → separate channel)"
                            if PAPER_CHAT_ID else ", daily report here)"))
+                try:
+                    import ibkr
+                    if ibkr.enabled():
+                        extra += f"\nIBKR paper mirror 🏦: ON ({ibkr.MIRROR} portfolio → IBKR paper account)"
+                except Exception:
+                    pass
         if HEARTBEAT_ROLE != "phone":
             extra += "\nReal-time news ⚡: " + alpaca.selftest()
         if earnings and HEARTBEAT_ROLE != "phone" and earnings.ON:
@@ -675,7 +681,8 @@ def main():
     volume = extras.VolumeWatcher(http_get_json, send_telegram)
     bo_watch = (buyout.BuyoutWatch(lambda text, silent: send_telegram(text, silent, BUYOUT_CHAT_ID))
                 if HEARTBEAT_ROLE != "phone" and BUYOUT_CHAT_ID and buyout.BuyoutWatch.enabled() else None)
-    mv_watch = (movers.MoversWatch(lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID), TICKERS)
+    mv_watch = (movers.MoversWatch(lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID), TICKERS,
+                                   (lambda text, silent: send_telegram(text, silent, BUYOUT_CHAT_ID)) if BUYOUT_CHAT_ID else None)
                 if movers and HEARTBEAT_ROLE != "phone" and movers.MoversWatch.enabled() else None)
     earn_watch = (earnings.EarningsWatch(send_telegram, TICKERS, news_sec_cik)
                   if earnings and HEARTBEAT_ROLE != "phone" and earnings.EarningsWatch.enabled() else None)

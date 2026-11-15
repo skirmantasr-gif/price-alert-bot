@@ -938,6 +938,14 @@ class NewsWatcher:
     def format(self, it):
         msg = self._format(it)
         lab = impact.label(it.get("impact"))
+        if lab and learn:
+            try:
+                kind = it.get("kind", "news")
+                tr = learn.track_line(kind if kind in ("sec", "gov") else "news", it.get("impact"))
+                if tr:
+                    lab += "\n" + tr
+            except Exception:
+                pass
         if lab:
             head, _, tail = msg.rpartition("\n")  # impact goes above the link line
             msg = f"{head}\n{html.escape(lab)}\n{tail}" if head else f"{msg}\n{html.escape(lab)}"

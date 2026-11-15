@@ -236,6 +236,31 @@ def guidance(kind):
 
 _st_ro = {}  # read-only view of state['_learn'] for guidance(); refreshed by Reviewer.attach()
 
+# ---------------------------------------------------------------- track record shown inside alerts
+# (idea from orallexa's calibration: AI confidence words are squashed to the middle, so show the REAL hit rate)
+TRACK_MIN = int(os.environ.get("TRACK_MIN", "30"))   # checked calls needed before a rate is shown
+TRACK_LAST = 60                                        # rate over the most recent N checked calls
+CONF_WORD = {"high": "Expected", "medium": "Likely", "low": "Possibly"}
+SRC_WORD = {"news": "news", "sec": "SEC", "gov": "US contract", "contract": "contract-win", "outlook": "outlook"}
+
+
+def track_line(src, impact, st=None):
+    """'📏 Track record: right 58% of the last 41 "Likely" news calls …' once the same kind of call
+    (source + AI/rules + confidence) has >= TRACK_MIN checked results; else ''. Neutral calls: ''."""
+    if not ON or not impact or impact[0] not in ("up", "down"):
+        return ""
+    d, conf, _, by = impact
+    st = _st_ro if st is None else st
+    ps = [p for p in (st or {}).get("p", []) if "r" in p and p.get("src") == src and p.get("by") == by
+          and p.get("c") == conf]
+    ps = sorted(ps, key=lambda p: p["t"])[-TRACK_LAST:]
+    if len(ps) < TRACK_MIN:
+        return ""
+    g = _group(ps)
+    return (f"📏 Track record: right {g['right_of_all_pct']}% of the last {g['n']} \"{CONF_WORD.get(conf, conf)}\" "
+            f"{SRC_WORD.get(src, src)} calls{' (AI)' if by == 'ai' else ''} — moved >{FLAT:g}% the called way by the "
+            f"next close; average {g['edge_pct']:+.1f}% in the called direction")
+
 
 def _record_text(g):
     parts = []

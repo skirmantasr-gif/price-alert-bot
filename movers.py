@@ -33,6 +33,8 @@ from email.utils import parsedate_to_datetime
 
 import extras
 import impact
+
+PM_MIN_PCT = 10.0   # 🔬 post-mortem only for real deal jumps
 import watchlist
 
 try:
@@ -414,8 +416,9 @@ def _cap(v):
 
 # ---------------------------------------------------------------- the watcher
 class MoversWatch:
-    def __init__(self, send, tickers=()):
+    def __init__(self, send, tickers=(), send_bo=None):
         self.send = send           # send(text, silent) -> bool  (contracts channel)
+        self.send_bo = send_bo     # 🎯 buyout channel: 🔬 post-mortems of real buyouts (optional)
         self.tickers = list(tickers)
         self.thread, self.result, self.job = None, None, None
 
@@ -588,6 +591,13 @@ class MoversWatch:
                 log.warning("Movers AI failed: %s", type(e).__name__)
         for i, r in enumerate(movers):
             r["ai"] = why.get(i)
+        for r in up:   # 🔬 buyout post-mortem: fingerprint on the data from before the jump
+            if (r.get("ai") or {}).get("cause") == "buyout" and r["pct"] >= PM_MIN_PCT:
+                try:
+                    import buyout
+                    r["pm"] = buyout.postmortem(r["s"], day, bo_cands.get(r["s"]))
+                except Exception as e:
+                    log.warning("Buyout post-mortem failed: %s", type(e).__name__)
         nxt = {s: by[s]["pct"] for s in yday if s in by and by[s]["pct"] is not None}
         return {"day": day, "up": up, "down": down, "wl": wl, "next": nxt, "n": len(good), "all": len(pool_syms)}
 
@@ -629,6 +639,19 @@ class MoversWatch:
                 e["pre"] = known_pre(e)
                 e["ao"] = after_open(e)
                 entries.append(e)
+        if self.send_bo:
+            import buyout
+            pms = mv.setdefault("pm", [])
+            for r in res["up"]:
+                pm = r.get("pm")
+                if not pm or any(x[0] == day and x[1] == r["s"] for x in pms):
+                    continue
+                e = next((x for x in entries if x["s"] == r["s"]), {})
+                pms.append([day, r["s"], pm["score"], pm["boost"], pm["qual"], bool(pm["cand"])])
+                tally = (f"Tally since {pms[0][0]}: {len(pms)} buyouts · we had {sum(x[5] for x in pms)} · "
+                         f"fingerprint would have flagged {sum(x[4] for x in pms)}")
+                self.send_bo(buyout.pm_message(pm, r["pct"], r["name"], e.get("why", ""), e.get("link", ""), tally), False)
+            mv["pm"] = pms[-100:]
         diary[:] = [e for e in diary if e["d"] != day] + entries
         cut = (datetime.now(NY) - timedelta(days=KEEP_DAYS)).strftime("%Y-%m-%d")
         diary[:] = [e for e in diary if e["d"] >= cut]

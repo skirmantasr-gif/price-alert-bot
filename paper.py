@@ -7,6 +7,10 @@ Portfolios (each starts with €100, run side by side on the same alerts):
   outlook  🧭 hourly outlook "May go UP" calls (medium + high)
   calm     🌡️ same as 👍 Likely+, but skips buys while the 🌡️ market mood (mood.py) is defensive — started as an
            exact copy of 👍 (2026-11-10), so the difference between the two shows whether the mood filter helps
+  insider  👥 every insider cluster buy (insiders.py: 2+ officers/directors buying on the open market), added
+           2026-11-15. Own SLOWER exits (EXITS below): studies find the insider edge builds over months, so the
+           3% profit lock would cut it off: stop -15%, take profit +30%, no profit lock, sold after 90 days.
+           Insider signals go ONLY here (the other four keep their original rules).
   + benchmark: the same €100 in the S&P 500 (SPY) from the start date
 
 Rules (same for all):
@@ -59,6 +63,11 @@ try:
 except ImportError:  # pragma: no cover  (copy without mood.py)
     mood = None
 
+try:
+    import ibkr
+except ImportError:  # pragma: no cover  (copy without ibkr.py)
+    ibkr = None
+
 ON = os.environ.get("PAPER", "true").lower() == "true"
 START_EUR = 100.0
 SIZE_EUR = 10.0
@@ -86,13 +95,24 @@ PORTFOLIOS = {
     "outlook": ("🧭 Hourly outlook", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] == "outlook"),
     "calm": ("🌡️ Mood-filtered", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] != "outlook"
              and s.get("mood") != "defensive"),
+    "insider": ("👥 Insider clusters", lambda s: s["d"] == "up" and s["src"] == "insider"),
 }
+ONLY = {"insider": "insider"}  # source traded by ONE portfolio only (never reaches the other rules)
+# Per-portfolio exits (default: the module constants). trail None = no profit lock; days = sell after N days.
+EXITS = {"insider": {"stop": -0.15, "take": 0.30, "trail": None, "days": 90}}
+
+
+def exits(key):
+    e = {"stop": STOP, "take": TAKE, "trail": (TRAIL_START, TRAIL), "days": None}
+    e.update(EXITS.get(key, {}))
+    return e
 # Portfolios that no longer open new trades (still scored; open trades close by their normal rules).
 # 🧭 outlook: profit factor 0.31 and -1.5% vs S&P +2.5% after its first week (owner 2026-11-15).
 PAUSED = {"outlook": "2026-11-15"}
 CLONE = {"calm": "likely"}  # a portfolio added later starts as an exact copy of this one (fair comparison)
 MOOD_GATED = {"calm": "likely"}  # buys skipped only because of the mood are logged ("⏭️ Skipped")
-SRC = {"news": "news", "sec": "SEC", "gov": "US contract", "contract": "contract win", "outlook": "outlook"}
+SRC = {"news": "news", "sec": "SEC", "gov": "US contract", "contract": "contract win", "outlook": "outlook",
+       "insider": "insider cluster"}
 CONF = {"high": "Expected UP", "medium": "Likely UP", "low": "Possibly UP"}
 
 
@@ -245,6 +265,9 @@ def on_signal(st, sig, now=None):
         pf = st["pf"].setdefault(key, _pf())
         pf.setdefault("pending", {})
         tk = sig["tk"]
+        only = [k for k, v in ONLY.items() if v == sig.get("src")]
+        if (only and key not in only) or (not only and key in ONLY):
+            continue
         if sig["d"] == "down" and sig["c"] in ("medium", "high"):
             if tk in pf["open"] and "exit" not in pf["open"][tk]:
                 pf["open"][tk]["exit"] = {"t": int(now), "why": "DOWN call"}
@@ -266,7 +289,8 @@ def on_signal(st, sig, now=None):
 
 def step(st, now, data):
     """Fill waiting orders and apply exits, using only regular-session prices up to `now`."""
-    for pf in st["pf"].values():
+    for key, pf in st["pf"].items():
+        ex = exits(key)
         pf.setdefault("pending", {})
         for tk, o in list(pf["pending"].items()):
             d = data(tk)
@@ -302,15 +326,19 @@ def step(st, now, data):
                 continue
             # live exits: only bars not looked at before (the high since the buy is kept in the position)
             peak = pos.get("hi", pos["p0"])
+            stop, take, tr, days = ex["stop"], ex["take"], ex["trail"], ex["days"]
             for i, b in enumerate(bars):
                 if b[0] <= pos.get("seen", 0):
                     continue
                 ret = b[2] / pos["p0"] - 1
                 peak = max(peak, b[2])
-                trail = peak / pos["p0"] - 1 >= TRAIL_START and b[2] <= peak * (1 - TRAIL)
-                if ret <= STOP or ret >= TAKE or trail:
-                    why = ("stop −8%" if ret <= STOP else "take profit +15%" if ret >= TAKE else
-                           f"profit lock: was up {(peak / pos['p0'] - 1) * 100:+.1f}%, fell 2% from the high")
+                trail = bool(tr) and peak / pos["p0"] - 1 >= tr[0] and b[2] <= peak * (1 - tr[1])
+                old = bool(days) and b[0] - pos["t"] >= days * 86400
+                if ret <= stop or ret >= take or trail or old:
+                    why = (f"stop {stop * 100:.0f}%".replace("-", "−") if ret <= stop else
+                           f"take profit +{take * 100:.0f}%" if ret >= take else
+                           f"held {days} days (time limit)" if old else
+                           f"profit lock: was up {(peak / pos['p0'] - 1) * 100:+.1f}%, fell {tr[1] * 100:.0f}% from the high")
                     nxt = bars[i + 1] if i + 1 < len(bars) else None
                     if nxt:
                         _sell(pf, tk, nxt[1], nxt[0], now, why, data)
@@ -503,6 +531,8 @@ def report(st, now, data, title):
                      " — the number to beat")
     if st.get("mood_line"):
         lines.append(st["mood_line"])
+    if st.get("ib", {}).get("line"):
+        lines.append(st["ib"]["line"])
     try:
         lines.append(money_rule(st, now, data))
     except Exception as e:
@@ -516,7 +546,9 @@ def report(st, now, data, title):
                  f"the next opening price) minus an estimated spread; sold live (checked every 5 min) by the profit lock "
                  f"(from +{TRAIL_START * 100:.0f}%, a {TRAIL * 100:.0f}% drop from the high), "
                  f"at −8% / +15%, or on a DOWN call; no time limit; 0.15% fee each way; currency moves ignored. "
-                 f"🌡️ Mood-filtered = 👍 but no new buys while the market mood is defensive.</i>")
+                 f"🌡️ Mood-filtered = 👍 but no new buys while the market mood is defensive. "
+                 f"👥 Insider clusters = every insider cluster buy, slower exits: −15% / +30%, no profit lock, "
+                 f"sold after 90 days (the insider edge builds over months).</i>")
     return "\n".join(lines)
 
 
@@ -533,14 +565,18 @@ def account(st, key, now, data):
         stock_val += mv
         pl = mv - pos.get("cost", SIZE_EUR)
         hi = _peak(data, tk, pos, now)
+        ex = exits(key)
         if "exit" in pos:
             plan = "selling at the next price"
         else:
-            sell = [f"stop ≤{pos['p0'] * (1 + STOP):,.4g}", f"target ≥{pos['p0'] * (1 + TAKE):,.4g}"]
-            if hi / pos["p0"] - 1 >= TRAIL_START:
-                sell.insert(0, f"🔒 profit lock ≤{hi * (1 - TRAIL):,.4g}")
-            else:
-                sell.append(f"profit lock from ≥{pos['p0'] * (1 + TRAIL_START):,.4g}")
+            sell = [f"stop ≤{pos['p0'] * (1 + ex['stop']):,.4g}", f"target ≥{pos['p0'] * (1 + ex['take']):,.4g}"]
+            tr = ex["trail"]
+            if tr and hi / pos["p0"] - 1 >= tr[0]:
+                sell.insert(0, f"🔒 profit lock ≤{hi * (1 - tr[1]):,.4g}")
+            elif tr:
+                sell.append(f"profit lock from ≥{pos['p0'] * (1 + tr[0]):,.4g}")
+            if ex["days"]:
+                sell.append(f"time limit {_local(pos['t'] + ex['days'] * 86400, '%b %d')}")
             plan = "sells at: " + " · ".join(sell) + f" · held {_age(now - pos['t'])}"
         rows.append(f"   • <b>${html.escape(tk)}</b> €{mv:.2f} ({pl:+.2f}, {_pct(p / pos['p0'] - 1)}) · "
                     f"bought {pos['p0']:,.4g} ({_local(pos['t'])}) → now {p:,.4g} · high {hi:,.4g}\n"
@@ -564,7 +600,7 @@ _state_ref = None
 
 
 # Scored in the 🎓 review but never traded: adding them would change the portfolios' rules mid-measurement.
-NOT_TRADED = {"salesignal", "insider", "premarket"}
+NOT_TRADED = {"salesignal", "premarket"}  # insider: traded only by 👥 (ONLY), since 2026-11-15
 
 
 def record(sig):
@@ -605,6 +641,7 @@ class Tracker:
         self.live_trades = live_trades  # own channel: hourly trade updates while the market is open
         self.last = 0.0
         self.cache = {}
+        self.mirror = ibkr.Mirror(send) if ibkr and ibkr.enabled() else None  # 🏦 IBKR paper (server only)
 
     @staticmethod
     def enabled():
@@ -677,6 +714,8 @@ class Tracker:
                          f"{_dd(st.get('bench_eq'), START_EUR * (1 - FEE))} — the number to beat")
         if st.get("mood_line"):
             parts.append(st["mood_line"])
+        if st.get("ib", {}).get("line"):
+            parts.append(st["ib"]["line"])
         if new:
             tl = [x for _, x in new[:10]] + ([f"… and {len(new) - 10} more"] if len(new) > 10 else [])
             parts.append("<b>Trades since the last statement:</b>\n" + "\n".join(tl))
@@ -706,6 +745,11 @@ class Tracker:
             changed = True
         if self.live_trades:
             changed |= self._trades_now(st, now)
+        if self.mirror:
+            try:
+                changed |= self.mirror.sync(st)
+            except Exception as e:
+                log.warning("IBKR mirror sync failed: %s", type(e).__name__)
         et = _ny(now)
         hm = et.strftime("%H:%M")
         if self.live_trades and et.weekday() < 5:

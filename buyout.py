@@ -77,6 +77,7 @@ AUTO_MUST = {"commercial", "cheap"}  # automatic list: must be a real, growing, 
 US_EXCH = {"NMS", "NGM", "NCM", "NYQ", "ASE", "NAS", "NYS", "PCX", "BTS"}
 SKIP_SECTORS = ("Financial Services", "Real Estate")
 CHEAP_EVS = {"Healthcare": 3.0, "Technology": 3.0, "Communication Services": 2.5}  # others: 1.5
+BOOST_SECTORS = ("Healthcare", "Basic Materials", "Communication Services")
 SECTOR_SHORT = {"Healthcare": "HC", "Technology": "Tech", "Communication Services": "Comm", "Industrials": "Ind",
                 "Consumer Cyclical": "Cons", "Consumer Defensive": "Stap", "Energy": "Enrg", "Basic Materials": "Mat",
                 "Utilities": "Util", "Financial Services": "Fin", "Real Estate": "RE"}
@@ -264,10 +265,16 @@ def fundamentals(t):
     return out
 
 
-def daily_chart(t):
+def daily_chart(t, before=None):
+    """1 year of daily (ts, close, volume); before='YYYY-MM-DD' keeps only days before it (New York date)."""
     r = _json(f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?range=1y&interval=1d")["chart"]["result"][0]
     q = r["indicators"]["quote"][0]
-    return [(ts, c, v) for ts, c, v in zip(r["timestamp"], q["close"], q["volume"]) if c and v is not None], r["meta"]
+    bars = [(ts, c, v) for ts, c, v in zip(r["timestamp"], q["close"], q["volume"]) if c and v is not None]
+    if before:
+        from zoneinfo import ZoneInfo
+        ny = ZoneInfo("America/New_York")
+        bars = [b for b in bars if datetime.fromtimestamp(b[0], ny).strftime("%Y-%m-%d") < before]
+    return bars, r["meta"]
 
 
 _SECT = {}  # ticker -> sector (persisted in state _bo.sect)
@@ -311,10 +318,10 @@ def auto_universe():
     return [t for t, _ in sorted(seen.items(), key=lambda kv: kv[1]) if t not in SKIP][:AUTO_MAX_SCAN]
 
 
-def score(t, sect=None):
+def score(t, sect=None, before=None):
     sect = sector(t) if sect is None else sect
     f = fundamentals(t)
-    bars, meta = daily_chart(t)
+    bars, meta = daily_chart(t, before) if before else daily_chart(t)
     rev = [v for _, v in f.get("quarterlyTotalRevenue", [])]
     if len(rev) < 5 or len(bars) < 60:
         return None
@@ -341,7 +348,17 @@ def score(t, sect=None):
         "depressed": price / hi - 1 <= -0.35,
         "spikes": spikes >= 1,
     }
+    # 2026-11-15 re-weighting from the 68-deal study (bo-study): two extra "boost" points that only change the
+    # ranking (and let a 4/6 stock with BOTH boosts in) — the 6-point score and its thresholds stay as they were.
+    #   sector    Healthcare 1.9x, Basic Materials 2.7x, Communication 3.0x more common among buyouts
+    #   buildup   volume building: last 10 days >= 1.5x the 20 days before, or a 3x-volume day in the last 30 days
+    #             (1.8x / 1.6x more common among buyouts)
+    v10 = statistics.mean(vols[-10:]) if len(vols) >= 30 else 0
+    v20 = statistics.mean(vols[-30:-10]) if len(vols) >= 30 else 0
+    big = any(vols[i] >= 3 * (statistics.mean(vols[i - 20:i]) or 1) for i in range(max(20, len(vols) - 30), len(vols)))
+    boosts = [k for k, v in {"sector": sect in BOOST_SECTORS, "buildup": (v20 > 0 and v10 >= 1.5 * v20) or big}.items() if v]
     return {"t": t, "score": sum(hits.values()), "hits": [k for k, v in hits.items() if v], "price": price,
+            "boost": len(boosts), "boosts": boosts,
             "mcap": mcap, "ttm": ttm, "yoy": yoy, "ev_s": ev / ttm if ttm > 0 else None, "debt": debt, "cash": cash,
             "dil": dil, "off_high": price / hi - 1, "spikes": spikes, "avg_vol": statistics.mean(vols[-21:-1]),
             "name": meta.get("longName") or meta.get("shortName") or t, "sector": sect}
@@ -468,14 +485,98 @@ def _pct(x):
     return "  n/a" if x is None else f"{x * 100:+.0f}%"
 
 
+# ---------------------------------------------------------------- 📚 study summary (posted once per version)
+STUDY_V = 1
+STUDY_SUMMARY = """📚 <b>What 68 real buyouts looked like before the deal</b>
+<i>Study 2026-11-09: 68 US cash takeovers (Nov 2025 – Nov 2026, median jump +23%) compared with 205 random US stocks.
+"×" = how much more often the sign showed up before a buyout than in normal stocks.</i>
+
+<b>Signs that helped</b>
+• 📣 Public sale signs (activist pushing a sale, strategic review, offer rejected), 3+ headlines: <b>4×</b> — every activist-pushes-sale case ended in a deal
+• Sector: Communication 3.0×, Materials 2.7×, Healthcare 1.9× (Tech 1.2×; banks 0.4×, real estate 0.3×)
+• ≥35% below the 1-year high: 1.8× · volume building up (10 days ≥1.5× normal): 1.8×
+• +5% in the last 5 days: 1.7× · a 3×-volume day in the last 30 days: 1.6× · rumour-type spikes in 12 months: 1.5×
+
+<b>Signs that did NOT help</b>
+• Any big holder filing (13D) in 2 years: 1.0× — useless alone
+
+<b>Honest bottom line</b>
+• Fingerprint score ≥4: 22% of buyouts vs 8% of normal stocks (2.8×) → about <b>6% chance per year</b> for a flagged stock (normal ~2.3%)
+• 87% of buyouts had NO public rumour beforehand
+• Buying "likely targets" alone ≈ +1.5%/year from premiums (6% × 23%) — not a strategy by itself
+• Strongest usable signal = 📣 public sale signs caught live (that's what the hourly scan does)
+
+<b>What changed in this channel because of it</b>
+• 📣 public sale signals (hourly, all US stocks)
+• table scores show +1/+2 boosts: buyout-prone sector, volume building up (ranking only)
+• 🔬 post-mortem after every real buyout among the day's top winners: did we have it, what did the fingerprint miss
+<i>Pattern statistics, not predictions or advice.</i>"""
+
+
+# ---------------------------------------------------------------- 🔬 post-mortem of real buyouts
+HIT_WORD = {"commercial": "sales growing", "cheap": "cheap", "stress": "money pressure", "smallcap": "small cap",
+            "depressed": "beaten down", "spikes": "rumour-type spikes"}
+BOOST_WORD = {"sector": "buyout-prone sector", "buildup": "volume building up"}
+
+
+def postmortem(t, day, cand=None):
+    """Fingerprint of a stock that jumped on a buyout, measured on data from BEFORE the jump day.
+    Quarterly numbers are the latest reported (could include a quarter reported after the deal - rare)."""
+    r = score(t, before=day)
+    if not r:
+        return None
+    return {"t": t, "score": r["score"], "boost": r.get("boost", 0), "hits": r["hits"], "boosts": r.get("boosts", []),
+            "qual": qualifies(r), "off_high": r["off_high"], "ev_s": r["ev_s"], "sector": r["sector"],
+            "cand": (cand or {}).get("since"), "signal": bool((cand or {}).get("signal")),
+            "rumour": bool((cand or {}).get("rumour"))}
+
+
+def pm_message(pm, pct, name, why="", link="", tally=""):
+    t = html.escape(pm["t"])
+    lines = [f"🔬 <b>Buyout post-mortem: ${t}</b> {pct:+.0f}% today — {html.escape(name[:50])}"]
+    if why:
+        lines.append(f"<i>{html.escape(why[:160])}</i>" + (f' · <a href="{html.escape(link)}">source</a>' if link else ""))
+    if pm["cand"]:
+        how = "📣 public sale signal" if pm["signal"] else "🗞️ takeover rumour" if pm["rumour"] else "fingerprint"
+        lines.append(f"✅ We had it: candidate since {pm['cand']} ({how}).")
+    elif pm["qual"]:
+        lines.append("⚠️ It qualified on yesterday's data but was NOT on our list (outside the scanned universe, "
+                     "or the candidate slots were full).")
+    else:
+        lines.append("❌ Not on our list — and the fingerprint would not have flagged it.")
+    miss = [HIT_WORD[k] for k in HIT_WORD if k not in pm["hits"]]
+    sc = f"{pm['score']}/6" + (f" +{pm['boost']}" if pm["boost"] else "")
+    lines.append(f"Fingerprint the day before: <b>{sc}</b>"
+                 + (f" · had: {', '.join(HIT_WORD[k] for k in pm['hits'])}" if pm["hits"] else "")
+                 + (f" · missing: {', '.join(miss)}" if miss else "")
+                 + (f" · boosts: {', '.join(BOOST_WORD[k] for k in pm['boosts'])}" if pm["boosts"] else ""))
+    lines.append(f"{_pct(pm['off_high'])} below its 1-year high, EV/sales "
+                 f"{pm['ev_s']:.1f}" if pm["ev_s"] is not None else f"{_pct(pm['off_high'])} below its 1-year high")
+    if tally:
+        lines.append("📒 " + tally)
+    lines.append("<i>Each post-mortem is one data point; the tally shows whether the fingerprint catches real deals.</i>")
+    return "\n".join(lines)
+
+
+def total(r):
+    return r["score"] + r.get("boost", 0)
+
+
+def qualifies(r):
+    """Candidate: base score >= MIN_SCORE, or one below it with both boosts (sector + volume build-up)."""
+    return r["score"] >= MIN_SCORE or (r["score"] >= MIN_SCORE - 1 and r.get("boost", 0) >= 2)
+
+
 def table(rows, title, cands):
     lines = [f"🎯 <b>{html.escape(title)}</b>",
              "<i>Fingerprint of Esperion before its 2026 buyout: sales growing, cheap, money pressure, small, "
-             "beaten down, rumour-type spikes. 6/6 = full match. All sectors; 'cheap' is judged per sector.</i>", "<pre>"]
-    lines.append(f"{'Ticker':6} {'Sc':>2} {'Sect':4} {'Cap':>5} {'EV/S':>4} {'Gr':>5} {'OffHi':>5}")
+             "beaten down, rumour-type spikes. 6/6 = full match. +1/+2 = boosts from the 68-deal study (sector "
+             "HC/Mat/Comm, volume building up). All sectors; 'cheap' is judged per sector.</i>", "<pre>"]
+    lines.append(f"{'Ticker':6} {'Sc':>3} {'Sect':4} {'Cap':>5} {'EV/S':>4} {'Gr':>5} {'OffHi':>5}")
     for r in rows:
         mark = "*" if r["t"] in cands else " "
-        lines.append(f"{r['t']:<5}{mark} {r['score']:>2} {SECTOR_SHORT.get(r.get('sector'), '?'):4} {_m(r['mcap']):>5} "
+        sc = f"{r['score']}" + (f"+{r['boost']}" if r.get("boost") else "")
+        lines.append(f"{r['t']:<5}{mark} {sc:>3} {SECTOR_SHORT.get(r.get('sector'), '?'):4} {_m(r['mcap']):>5} "
                      f"{(r['ev_s'] if r['ev_s'] is not None else 0):>4.1f} {_pct(r['yoy']):>5} {_pct(r['off_high']):>5}")
     lines.append("</pre>")
     lines.append("* = candidate (alerts on). Sect = sector (HC health, Tech, Comm, Ind industrial, Cons consumer, "
@@ -825,8 +926,8 @@ class BuyoutWatch:
                 dropped.append(t)
                 del cands[t]
         n_auto = sum(1 for c in cands.values() if c.get("auto"))
-        for r in sorted(rows, key=lambda r: (-r["score"], r["ev_s"] if r["ev_s"] is not None else 99)):
-            if r["score"] < MIN_SCORE or r["t"] in cands:
+        for r in sorted(rows, key=lambda r: (-total(r), -r["score"], r["ev_s"] if r["ev_s"] is not None else 99)):
+            if not qualifies(r) or r["t"] in cands:
                 continue
             if r.get("auto"):
                 if n_auto >= AUTO_MAX_CANDS or not AUTO_MUST <= set(r["hits"]):
@@ -851,7 +952,7 @@ class BuyoutWatch:
                 c.update({"name": by[t]["name"][:60], "avg_vol": by[t]["avg_vol"], "score": by[t]["score"]})
         shown = sorted([r for r in rows if (r["score"] >= MIN_SCORE - 1 and not r.get("auto"))
                         or (r["score"] >= MIN_SCORE and AUTO_MUST <= set(r["hits"])) or r["t"] in cands],
-                       key=lambda r: (r["t"] not in cands, -r["score"], r["ev_s"] if r["ev_s"] is not None else 99))
+                       key=lambda r: (r["t"] not in cands, -total(r), -r["score"], r["ev_s"] if r["ev_s"] is not None else 99))
         wk = bo.setdefault("wk", {"added": [], "dropped": [], "found": []})
         wk["added"] = list(dict.fromkeys(wk["added"] + ([] if first else added)))[-40:]
         wk["dropped"] = list(dict.fromkeys(wk["dropped"] + dropped))[-40:]
@@ -1020,6 +1121,10 @@ class BuyoutWatch:
     def check(self, state):
         bo = state.setdefault("_bo", {})
         changed = False
+        if bo.get("study_v") != STUDY_V:   # 📚 one-time study summary (again only if STUDY_V is raised)
+            if self.send(STUDY_SUMMARY, True) is not False:
+                bo["study_v"] = STUDY_V
+                changed = True
         if self.thread and not self.thread.is_alive() and self.result:
             self._finish_screen(bo, first=not bo.get("report_day"))
             bo["report_day"] = extras.local_now().strftime("%Y-%m-%d")
