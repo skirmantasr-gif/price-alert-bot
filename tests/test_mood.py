@@ -160,7 +160,7 @@ class MoodPortfolio(unittest.TestCase):
         groups = paper.Tracker._groups(st2)
         self.assertTrue(any("likely" in g and "calm" in g for g in groups))
         st2["pf"]["strong"]["cash"] = 1.0
-        self.assertIn(["likely", "outlook", "calm"], paper.Tracker._groups(st2))
+        self.assertIn(["likely", "outlook", "calm", "insider"], paper.Tracker._groups(st2))
 
 
 class WorstDrop(unittest.TestCase):

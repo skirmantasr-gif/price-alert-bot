@@ -96,7 +96,7 @@ class InsiderHistory(unittest.TestCase):
 class ScoredNotTraded(unittest.TestCase):
     def test_new_sources_not_traded(self):
         with mock.patch.object(paper, "_state_ref", {"pf": {}}), mock.patch.object(paper, "on_signal") as on:
-            for src in ("salesignal", "insider", "premarket"):
+            for src in ("salesignal", "premarket"):  # insider: traded by 👥 only since 2026-11-15
                 paper.record({"src": src, "d": "up", "c": "high", "tk": "ZNTX"})
             on.assert_not_called()
             paper.record({"src": "news", "d": "up", "c": "high", "tk": "ZNTX"})
