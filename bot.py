@@ -118,6 +118,7 @@ TP_COOKIE = os.environ.get("THIRDPARTY_COOKIE", "").strip() if TP_API else ""
 if TP_COOKIE_NAME and TP_COOKIE.startswith(TP_COOKIE_NAME + "="):
     TP_COOKIE = TP_COOKIE[len(TP_COOKIE_NAME) + 1:]
 TP_CONNECT_SID = os.environ.get("THIRDPARTY_CONNECT_SID", "").strip()
+TP_CHAT_ID = os.environ.get("THIRDPARTY_CHAT_ID", "").strip() or None  # own channel for forwards (server); default CHAT_ID
 if TP_CONNECT_SID.startswith("connect.sid="):
     TP_CONNECT_SID = TP_CONNECT_SID[len("connect.sid="):]
 NEWS_ON = os.environ.get("NEWS", "true").lower() == "true"
@@ -194,8 +195,8 @@ def send_telegram(text, silent=None, chat=None):
     return telegram_call("sendMessage", params, chat)
 
 
-def send_photo(url):
-    return telegram_call("sendPhoto", {"photo": url, "disable_notification": "true"})
+def send_photo(url, chat=None):
+    return telegram_call("sendPhoto", {"photo": url, "disable_notification": "true"}, chat)
 
 
 # ---------------------------------------------------------------- price source
@@ -363,10 +364,10 @@ def send_chat_message(header, body, link, pics, loud=True):
         text = (header + ("\n\n" + chunk if chunk else "")) if i == 0 else chunk
         if i == len(chunks) - 1:
             text += footer
-        if not send_telegram(text, silent=not (loud and i == 0)):
+        if not send_telegram(text, silent=not (loud and i == 0), chat=TP_CHAT_ID):
             return False
     for p in pics:
-        send_photo(p)  # best effort; a failed image shouldn't block the queue
+        send_photo(p, TP_CHAT_ID)  # best effort; a failed image shouldn't block the queue
     return True
 
 
@@ -599,7 +600,7 @@ def main():
         state.pop("_thirdparty", None)  # chat forwarding runs elsewhere; keep chat ids out of the saved state
     errors = {}
     log.info("Watching %d tickers, every %ds", len(TICKERS), POLL_SECONDS)  # tickers stay out of the public log
-    if watchlist.ERROR or (HEARTBEAT_ROLE == "github" and not TICKERS):
+    if watchlist.ERROR or (HEARTBEAT_ROLE in ("github", "server") and not TICKERS):
         send_telegram("⚠️ <b>No stocks to watch</b> — " + html.escape(
             watchlist.ERROR or "the WATCHLIST secret is missing or empty") + ". Price and news alerts are off.")
 
@@ -678,7 +679,7 @@ def main():
     outlook = (insights.HourlyInsights(TICKERS, LAST_CHART, volume, send_telegram)
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(
-        HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: thirdparty_on,
+        HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: (thirdparty_on if TP_COOKIE else None),
         daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st)]
                      + (options.daily_lines(TICKERS) if options else [])
                      + (context.daily_lines(TICKERS) if context else []))
@@ -752,19 +753,19 @@ def main():
             try:
                 changed |= thirdparty_check(state)
                 if thirdparty_fail_since == "notified":
-                    send_telegram("✅ Third-party chat forwarding recovered.")
+                    send_telegram("✅ Third-party chat forwarding recovered.", chat=TP_CHAT_ID)
                 thirdparty_fail_since = None
             except ThirdPartyAuthError as e:
                 log.warning("Third party login rejected (%s); forwarding paused until next run", e)
                 send_telegram("⚠️ <b>Third party refused the request</b> — chat messages are NOT being forwarded.\n"
-                              f"{html.escape(str(e))}")
+                              f"{html.escape(str(e))}", chat=TP_CHAT_ID)
                 thirdparty_on = False
             except Exception as e:
                 log.warning("Third party check failed: %s", type(e).__name__)
                 if thirdparty_fail_since is None:
                     thirdparty_fail_since = time.time()
                 elif thirdparty_fail_since != "notified" and time.time() - thirdparty_fail_since > ERROR_ALERT_AFTER:
-                    send_telegram("⚠️ Can't reach the third-party chat for 15+ min; will keep trying.")
+                    send_telegram("⚠️ Can't reach the third-party chat for 15+ min; will keep trying.", chat=TP_CHAT_ID)
                     thirdparty_fail_since = "notified"
         changed |= extras.FAILS.flush_to(state)
         if changed:

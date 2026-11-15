@@ -514,18 +514,23 @@ class Heartbeat:
         self.last = 0
 
     def check(self, state):
-        if self.role not in ("github", "phone"):
+        if self.role not in ("github", "phone", "server"):
             return False
         changed = False
         if time.time() - self.last >= HEARTBEAT_SECONDS:
             self.last = time.time()
             changed |= self._beat(state)
-        if self.role == "github":
+        if self.role in ("github", "server"):
             changed |= self._daily(state)
         return changed
 
     def _beat(self, state):
         iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        if self.role == "server":
+            # one machine does everything (since 2026-11-15): write the heartbeat the GitHub watchdog
+            # (watchdog.py) reads; there is no other side to check
+            self.api("setMyDescription", {"description": f"Status (auto-updated): server bot OK at {iso}"})
+            return False
         if self.role == "github":
             self.api("setMyDescription", {"description": f"Status (auto-updated): GitHub price/news bot OK at {iso}"})
             other = self.api("getMyShortDescription", {}) or {}
@@ -561,10 +566,20 @@ class Heartbeat:
         if now.strftime("%H:%M") < watchlist.STATUS_TIME or w.get("status_day") == today:
             return False
         w["status_day"] = today
-        lines = [f"☀️ <b>Daily check</b> · {now.strftime('%a %b %d')}", "✅ Price &amp; news bot (GitHub): running"]
-        text = w.get("other", "")
-        ts = _parse_ts(text)
-        if ts is None:
+        if self.role == "server":
+            lines = [f"☀️ <b>Daily check</b> · {now.strftime('%a %b %d')}", "✅ Price &amp; news bot (server): running"]
+            tp = self.thirdparty_ok()
+            if tp is not None:
+                lines.append("✅ Substack forwarding (server): on · login OK" if tp else
+                             "❌ Substack forwarding (server): STOPPED — login expired, new cookie needed")
+            text, ts = "", None
+        else:
+            lines = [f"☀️ <b>Daily check</b> · {now.strftime('%a %b %d')}", "✅ Price &amp; news bot (GitHub): running"]
+            text = w.get("other", "")
+            ts = _parse_ts(text)
+        if self.role == "server":
+            pass
+        elif ts is None:
             lines.append("❔ Phone / third-party forwarding: no status yet")
         elif time.time() - ts > STALE_AFTER:
             lines.append(f"❌ Phone / third-party forwarding: offline (last seen {_ago(ts)})")
