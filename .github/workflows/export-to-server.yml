@@ -1,0 +1,57 @@
+name: Export settings to server (one-time, manual)
+
+# Locks the bot's secrets with the server's PUBLIC key (server-transfer.pub) so that only the server
+# (which holds the private key) can open them. Nothing secret is printed; the artifact expires after 1 day.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Encrypt secrets for the server
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.PRICEHINIO_ALERT }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEC_CONTACT: ${{ secrets.SEC_CONTACT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WATCHLIST: ${{ secrets.WATCHLIST }}
+          CONTRACTS_CHAT_ID: ${{ secrets.CONTRACTS_CHAT_ID }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          BUYOUT: ${{ secrets.BUYOUT }}
+          BUYOUT_CHAT_ID: ${{ secrets.BUYOUT_CHAT_ID }}
+          PAPER_CHAT_ID: ${{ secrets.PAPER_CHAT_ID }}
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+        run: |
+          set -e
+          umask 077
+          python3 - > bundle.json <<'PY'
+          import json, os
+          keys = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "SEC_CONTACT", "ANTHROPIC_API_KEY", "WATCHLIST",
+                  "CONTRACTS_CHAT_ID", "ALPACA_KEY", "ALPACA_SECRET", "BUYOUT", "BUYOUT_CHAT_ID", "PAPER_CHAT_ID",
+                  "STATE_KEY"]
+          print(json.dumps({k: os.environ.get(k, "") for k in keys}))
+          PY
+          mkdir out
+          openssl rand -hex 32 > k.txt
+          openssl pkeyutl -encrypt -pubin -inkey server-transfer.pub -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256 -in k.txt -out out/key.enc
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass file:k.txt -in bundle.json -out out/bundle.enc
+          cp state.enc out/ 2>/dev/null || true
+          rm -f bundle.json k.txt
+          ls -l out | awk '{print $5, $9}'
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: server-transfer
+          path: out/
+          retention-days: 1
