@@ -447,7 +447,13 @@ def in_title(title, t, name):
     headline; not "Memory Bandwidth," / "Daraxonrasib Journey From" / "Versus Surgery" (2026-11-15 noise)."""
     tick = (r"(?<![A-Za-z$])\$?" + re.escape(t) + r"(?![A-Za-z])" if len(t) >= 3 else
             r"(\$" + re.escape(t) + r"|\(" + re.escape(t) + r"\)|(NYSE|NASDAQ|Nasdaq)(:|\s)\s*" + re.escape(t) + r")(?![A-Za-z])")
-    if re.search(tick, title):
+    for m in re.finditer(tick, title):
+        # "WEN Acquisition Corp" is a SPAC (WENN), not Wendy's ($WEN): a bare ticker followed by a
+        # company-type word that is not in our own name is another company (2026-11-16 noise)
+        nxt = re.match(r"\s+(Acquisition|Holdings?|Capital|Partners|Ventures|Group)\b", title[m.end():])
+        if (nxt and not m.group(0).startswith("$")
+                and nxt.group(1).lower() not in (name or "").lower()):
+            continue
         return True
     toks = re.findall(r"[A-Za-z][A-Za-z&\-]+", name or "")
     words = [w for w in toks if len(w) >= 3 and w.lower() not in ("and", "the", "of")]

@@ -183,6 +183,13 @@ def telegram_call(method, params, chat=None):
                     return telegram_call(method, plain, chat) or "dropped"
                 return "dropped" if method == "sendMessage" else False
             time.sleep(wait)
+        except TimeoutError:
+            # The request was sent but the reply timed out: Telegram has usually delivered it already
+            # (2026-11-16: 4 retries + the next news poll = the same headline 5x). Count it as sent;
+            # connection failures (URLError) still retry below.
+            log.warning("Telegram %s: no reply in time (attempt %d) — assuming delivered, not resending",
+                        method, attempt + 1)
+            return "unconfirmed"
         except Exception as e:
             log.warning("Telegram %s failed (attempt %d): %s", method, attempt + 1, type(e).__name__)
             time.sleep(3 * (attempt + 1))

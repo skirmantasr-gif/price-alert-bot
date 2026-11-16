@@ -45,6 +45,8 @@ USD_PER_EUR = float(os.environ.get("IBKR_USD_PER_EUR", "100"))  # €10 practice
 MAX_ORDER_USD = 5000.0
 FILL_WAIT = 45          # seconds to wait for a fill before reporting "waiting for the open"
 SYNC_SECONDS = 600      # fills / account line refresh
+REQUEST_TIMEOUT = 20    # seconds per IBKR request (ib_async default = wait forever)
+JOB_LIMIT = 180         # a job running longer = stuck worker (2026-11-16: hung all day, buys never sent)
 LIVE_PORT = 4001
 
 
@@ -114,6 +116,9 @@ class Mirror:
         self.posted = set()         # execution ids already posted
         self.last_sync = 0.0
         self.thread = None
+        self.job = None             # job the worker is running now
+        self.started = 0.0          # when it started
+        self.gen = 0                # worker generation; a stuck worker is abandoned by bumping it
         logging.getLogger("ib_async").setLevel(logging.WARNING)
 
     # ---- bot thread
@@ -126,33 +131,78 @@ class Mirror:
             ib["posted"] = sorted(self.posted)[-300:]
             if self.line:
                 ib["line"] = self.line
+        self._watchdog()
         evs = new_events(st)
         for e in evs:
+            log.info("IBKR mirror: queued %s %s", e["a"], e["tk"])
             self.q.put(e)
         if time.time() - self.last_sync >= SYNC_SECONDS:
             self.last_sync = time.time()
             self.q.put({"a": "sync"})
         if not self.thread or not self.thread.is_alive():
-            self.thread = threading.Thread(target=self._run, name="ibkr", daemon=True)
-            self.thread.start()
+            self._start()
         return bool(evs)
 
-    # ---- worker thread
-    def _run(self):
-        asyncio.set_event_loop(asyncio.new_event_loop())
-        while True:
-            job = self.q.get()
+    def _start(self):
+        self.thread = threading.Thread(target=self._run, args=(self.gen, self.q), name="ibkr", daemon=True)
+        self.thread.start()
+
+    def _watchdog(self, now=None):
+        """A job hanging past JOB_LIMIT: leave that worker behind (it can't be killed), start a fresh one with a
+        new queue and give the stuck buy/sell another try there. Returns True if it restarted."""
+        now = now or time.time()
+        with self.lock:
+            job, started = self.job, self.started
+        if not job or now - started < JOB_LIMIT:
+            return False
+        a, tk = job.get("a"), job.get("tk", "")
+        log.warning("IBKR mirror: %s %s stuck for %ds; starting a new worker", a, tk, int(now - started))
+        old = self.q
+        self.gen += 1
+        self.q = queue.Queue()
+        with self.lock:
+            self.job = None
+        if a in ("buy", "sell") and not job.get("retry"):
+            self.q.put(dict(job, retry=True))
+        while True:  # carry over what was waiting behind the stuck job
             try:
-                self._do(job)
+                self.q.put(old.get_nowait())
+            except queue.Empty:
+                break
+        self.send(f"🏦⚠️ IBKR paper: the connection hung ({html.escape(a or '')}"
+                  f"{' <b>$' + html.escape(tk) + '</b>' if tk else ''}) — restarted"
+                  f"{', trying again' if a in ('buy', 'sell') and not job.get('retry') else ''}", True)
+        self._start()
+        return True
+
+    # ---- worker thread
+    def _run(self, gen=0, q=None):
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        q = q or self.q
+        while gen == self.gen:
+            job = q.get()
+            if gen != self.gen:  # abandoned while waiting; the new worker has the queue
+                break
+            with self.lock:
+                self.job, self.started = job, time.time()
+            if job.get("a") != "sync":
+                log.info("IBKR mirror: %s %s …", job.get("a"), job.get("tk"))
+            try:
+                self._do(dict(job, gen=gen))
             except Exception as e:
                 log.warning("IBKR mirror job failed: %s %s", type(e).__name__, str(e)[:120])
                 if job.get("a") in ("buy", "sell"):
                     self.send(f"🏦⚠️ IBKR paper: could not {job['a']} <b>${html.escape(job['tk'])}</b> "
                               f"({html.escape(type(e).__name__)}) — practice trade still counts", True)
+            finally:
+                with self.lock:
+                    if gen == self.gen:
+                        self.job = None
 
     def _connect(self):
         from ib_async import IB
         ib = IB()
+        ib.RequestTimeout = REQUEST_TIMEOUT
         ib.connect(HOST, PORT, clientId=CLIENT_ID, timeout=20)
         accts = ib.managedAccounts()
         if not is_paper(accts):
@@ -194,6 +244,9 @@ class Mirror:
                                   f"(buy never filled — cancelled)", True)
                         return
                     order = MarketOrder("SELL", qty, tif="DAY")
+                if job.get("gen", self.gen) != self.gen:  # this worker was left behind as stuck; the new one orders
+                    log.warning("IBKR mirror: stale worker woke up, not placing %s %s", a, tk)
+                    return
                 trade = ib.placeOrder(c, order)
                 end = time.time() + FILL_WAIT
                 while time.time() < end and not trade.isDone():
