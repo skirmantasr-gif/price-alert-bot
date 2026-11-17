@@ -61,13 +61,16 @@ GOV_NAMES = watchlist.GOV_NAMES
 CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))   # 🚨 + UP push at/above this
 GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "900"))  # was 300; server's fixed IP got HTTP 429 (2026-11-16)  # Google blocks too-frequent automated searches
 CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
+# Off by default since 2026-11-17: it doubled the Google searches (Google rate-limits the server IP) and
+# contracts.py already scans every new federal award. GOOGLE_CONTRACTS=true turns it back on.
+GOOGLE_CONTRACTS = os.environ.get("GOOGLE_CONTRACTS", "").strip().lower() == "true"
 USASPENDING_SECONDS = 3 * 3600    # federal award database (lags days behind press releases)
 USASPENDING_GROUP = 8              # company names per search (too many in one search → HTTP 503)
 # Watchlist-only USAspending check: off by default since 2026-11-07 — contracts.py now scans ALL new federal awards
 # (any listed US company, watchlist included). USASPENDING=true turns this older check back on.
 USASPENDING_ON = os.environ.get("USASPENDING", "").strip().lower() == "true"
 CALENDAR_SECONDS = 6 * 3600       # Google News search for announced earnings / FDA dates
-SA_SECONDS = int(os.environ.get("SA_SECONDS", "120"))  # Seeking Alpha per-stock feed (Google lists SA items hours late)
+SA_SECONDS = int(os.environ.get("SA_SECONDS", "60"))  # Seeking Alpha per-stock feed (Google lists SA items hours late)
 LATE_HOURS = 1.0                  # older than this when first seen → "⏰ published Xh ago", arrives silently
 RECENT_HOURS = 72                 # per-stock memory of sent / skipped headlines (kept in state, survives restarts)
 RECENT_PER_TICKER = 25
@@ -788,7 +791,7 @@ class NewsWatcher:
         mono = time.time()
         if fast:
             mono = float("-inf")  # nothing else is due
-        do_contracts = mono - self.last_contract_search >= CONTRACT_SEARCH_SECONDS
+        do_contracts = GOOGLE_CONTRACTS and mono - self.last_contract_search >= CONTRACT_SEARCH_SECONDS
         do_usa = USASPENDING_ON and mono - self.last_usaspending >= USASPENDING_SECONDS
         do_google = mono - self.last_google >= GOOGLE_SECONDS
         if do_google:

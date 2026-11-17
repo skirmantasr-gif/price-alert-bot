@@ -20,7 +20,7 @@ Env vars:
   POLL_SECONDS         default 60
   STATE_FILE           default ./state.json
   NEWS                 "true" (default) = also send news headlines + SEC filings (see news.py)
-  NEWS_SECONDS         how often to check news, default 300
+  NEWS_SECONDS         how often to check news, default 60
   SEC_CONTACT          contact email the SEC requires for EDGAR access; filings are skipped if unset
   THIRDPARTY_API, THIRDPARTY_SITE, THIRDPARTY_COOKIE_NAME, THIRDPARTY_COOKIE
                        optional third-party chat source (set only on the phone). When set, every new
@@ -127,7 +127,7 @@ TP_CHAT_ID = os.environ.get("THIRDPARTY_CHAT_ID", "").strip() or None  # own cha
 if TP_CONNECT_SID.startswith("connect.sid="):
     TP_CONNECT_SID = TP_CONNECT_SID[len("connect.sid="):]
 NEWS_ON = os.environ.get("NEWS", "true").lower() == "true"
-NEWS_SECONDS = int(os.environ.get("NEWS_SECONDS", "300"))
+NEWS_SECONDS = int(os.environ.get("NEWS_SECONDS", "60"))  # was 300; user wants news every minute (2026-11-17)
 # Tickers that keep price alerts but get no news / SEC / insider messages
 NEWS_EXCLUDE = watchlist.NEWS_EXCLUDE
 NEWS_TICKERS = [t for t in TICKERS if t not in NEWS_EXCLUDE]

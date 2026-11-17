@@ -10,6 +10,8 @@ the log. All requests to those hosts go through urlopen() here:
   - Telegram notice at most once per host per day, and "works again" after a notified block;
     FDA is quiet (it blocks cloud servers for good; only the daily check line shows it)
   - the pause survives restarts (saved in the bot state under "_net")
+  - after "works again" the last pause is remembered for MEMORY s: a new block soon after starts at double
+    that pause instead of 30 min again (2026-11-17: Google worked ~30 min, blocked 30 min, over and over)
 """
 import logging
 import threading
@@ -28,11 +30,13 @@ HOSTS = {
 }
 BLOCK_CODES = (403, 429)
 NOTICE_AFTER = 3600   # tell Telegram only when a block lasts 1h+ (a single short 429 is not news)
+MEMORY = 6 * 3600     # how long the last pause length is remembered after recovery
 
 _lock = threading.Lock()
 _st = {}              # host -> {"until", "delay", "since", "notified", "day"}
 _loaded = False
 _out = []             # pending Telegram messages
+_mem = {}             # host -> (last pause s, recovered at) for blocks soon after a recovery
 
 
 class Blocked(Exception):
@@ -80,7 +84,11 @@ def _blocked(host, code, now):
     name, first, cap, _ = HOSTS[host]
     with _lock:
         s = _st.setdefault(host, {})
-        s["delay"] = min(cap, s["delay"] * 2) if s.get("until") else first
+        if s.get("until"):
+            s["delay"] = min(cap, s["delay"] * 2)
+        else:
+            last, at = _mem.pop(host, (0, 0))
+            s["delay"] = min(cap, last * 2) if last and now - at < MEMORY else first
         s["until"] = now + s["delay"]
         s["code"] = code
         s.setdefault("since", now)
@@ -91,6 +99,8 @@ def _blocked(host, code, now):
 def _ok(host):
     with _lock:
         s = _st.pop(host, None)
+        if s:
+            _mem[host] = (s.get("delay", 0), time.time())
     if s:
         log.info("%s works again", HOSTS[host][0])
         if s.get("notified"):
@@ -146,4 +156,5 @@ def _reset():   # tests
     with _lock:
         _st.clear()
         _out.clear()
+        _mem.clear()
         _loaded = False
