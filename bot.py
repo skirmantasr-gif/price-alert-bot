@@ -83,6 +83,7 @@ except ImportError:  # phone copy without mood.py
 import contracts
 import extras
 import insights
+import netgate
 try:
     import learn
 except ImportError:  # phone copy without learn.py
@@ -700,7 +701,7 @@ def main():
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(
         HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: (thirdparty_on if TP_COOKIE else None),
-        daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st)]
+        daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st), netgate.status_line()]
                      + (options.daily_lines(TICKERS) if options else [])
                      + (context.daily_lines(TICKERS) if context else []))
         if HEARTBEAT_ROLE != "phone" else None)

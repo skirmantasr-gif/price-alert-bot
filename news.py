@@ -39,6 +39,7 @@ try:
     import learn
 except ImportError:  # phone copy without learn.py
     learn = None
+import netgate
 import watchlist
 
 log = logging.getLogger("bot")
@@ -58,7 +59,7 @@ MAX_SENDS_PER_POLL = 15     # rest waits for the next poll (keeps price checks r
 COMPANIES = watchlist.COMPANIES
 GOV_NAMES = watchlist.GOV_NAMES
 CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))   # 🚨 + UP push at/above this
-GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "300"))  # Google blocks too-frequent automated searches
+GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "900"))  # was 300; server's fixed IP got HTTP 429 (2026-11-16)  # Google blocks too-frequent automated searches
 CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
 USASPENDING_SECONDS = 3 * 3600    # federal award database (lags days behind press releases)
 USASPENDING_GROUP = 8              # company names per search (too many in one search → HTTP 503)
@@ -155,7 +156,7 @@ IMPORTANT_ITEMS = {"1.01", "1.02", "1.03", "1.05", "2.01", "2.05", "3.01", "3.02
 # ---------------------------------------------------------------- helpers
 def _get(url, headers=None, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with netgate.urlopen(req, timeout=timeout) as r:   # pauses Google News / FDA.gov while they block us
         return r.read()
 
 
@@ -726,6 +727,8 @@ class NewsWatcher:
             if base in notified and not any(k.split(":")[0] == base for k in self.fail):
                 notified.discard(base)   # fully recovered; may warn again next time
             return res
+        except netgate.Blocked:
+            return None   # paused with back-off; netgate logs it once and tells Telegram at most once a day
         except Exception as e:
             first = self.fail.setdefault(name, time.time())
             log.warning("News source %s failed: %s", base,  # no ticker in the public log
@@ -747,6 +750,9 @@ class NewsWatcher:
         today = now.strftime("%Y-%m-%d")
         changed = False
         new = []
+        for msg in netgate.notices():   # "⚠️ Google News is blocking…" (max once a day) / "✅ works again"
+            self.send(msg)
+        changed |= netgate.attach(state)   # keeps the back-off pauses across restarts
 
         inited = ns.setdefault("init", [])  # sources seen at least once; their backlog is skipped silently
 

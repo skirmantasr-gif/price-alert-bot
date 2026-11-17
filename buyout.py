@@ -49,6 +49,7 @@ from email.utils import parsedate_to_datetime
 
 import extras
 import impact
+import netgate
 import watchlist
 
 log = logging.getLogger("bot")
@@ -234,7 +235,7 @@ _GENERIC_WORDS = {"inc", "corp", "corporation", "ltd", "plc", "holdings", "holdi
 # ---------------------------------------------------------------- data
 def _get(url, timeout=20, headers=None):
     req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with netgate.urlopen(req, timeout=timeout) as r:   # pauses Google News while it blocks us
         return r.read()
 
 
@@ -699,7 +700,8 @@ class BuyoutWatch:
             try:
                 heads += [h for h in google(q) if not JUNK.search(h["title"])]
             except Exception as e:
-                log.warning("Buyout discovery search failed: %s", type(e).__name__)
+                if not netgate.is_blocked(e):
+                    log.warning("Buyout discovery search failed: %s", type(e).__name__)
             time.sleep(2)
         heads = list({h["title"]: h for h in heads}.values())[:60]
         if not heads:
@@ -742,7 +744,8 @@ class BuyoutWatch:
             try:
                 heads += [h for h in google(q) if not JUNK.search(h["title"]) and (not h["date"] or h["date"] >= cut)]
             except Exception as e:
-                log.warning("Sale signals search failed: %s", type(e).__name__)
+                if not netgate.is_blocked(e):
+                    log.warning("Sale signals search failed: %s", type(e).__name__)
             time.sleep(2)
         heads = [h for h in {h["title"]: h for h in heads}.values() if _hash("sig:" + h["title"].lower()) not in seen]
         out = {"seen": [_hash("sig:" + h["title"].lower()) for h in heads], "hits": [], "n": len(heads)}

@@ -48,6 +48,7 @@ except ImportError:  # e.g. an older phone copy without alpaca.py
         recent = staticmethod(lambda: [])
         selftest = staticmethod(lambda: "OFF (alpaca.py missing)")
 import impact
+import netgate
 
 try:
     import learn
@@ -279,7 +280,7 @@ SCHEMA = {
 # ---------------------------------------------------------------- helpers
 def _get(url, timeout=25, data=None, headers=None):
     req = urllib.request.Request(url, data=data, headers={"User-Agent": UA, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with netgate.urlopen(req, timeout=timeout) as r:   # pauses Google News while it blocks us
         return r.read()
 
 
@@ -928,7 +929,8 @@ class ContractScanner:
         try:
             items = fetch()
         except Exception as e:
-            log.warning("Contract scan %s failed: %s", label, getattr(e, "code", None) or type(e).__name__)
+            if not netgate.is_blocked(e):   # Google pauses are logged once by netgate
+                log.warning("Contract scan %s failed: %s", label, getattr(e, "code", None) or type(e).__name__)
             return False
         now = datetime.now(timezone.utc)
         today = now.strftime("%Y-%m-%d")
@@ -1118,7 +1120,8 @@ class ContractScanner:
                         src = ("the Pentagon's daily contract list" if how == "dod"
                                else html.escape(t.rsplit(" - ", 1)[-1][:60]))
             except Exception as e:
-                log.warning("Contract first-seen search failed: %s", type(e).__name__)
+                if not netgate.is_blocked(e):
+                    log.warning("Contract first-seen search failed: %s", type(e).__name__)
         return first, src
 
     def verify(self, it, r, name):
@@ -1140,7 +1143,8 @@ class ContractScanner:
                 if len(extra) >= 8:
                     break
         except Exception as e:
-            log.warning("Contract second check search failed: %s", type(e).__name__)
+            if not netgate.is_blocked(e):
+                log.warning("Contract second check search failed: %s", type(e).__name__)
         ctx = " | ".join(extra)
         if CEILING_RE.search(ctx) and r["kind"] == "new":
             r = {**r, "kind": "ceiling"}
