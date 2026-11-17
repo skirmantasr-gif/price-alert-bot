@@ -53,6 +53,20 @@ def _get(url, timeout=30):
 
 
 # ---------------------------------------------------------------- SEC data
+FEED_RETRY_WAIT = (5, 15)   # SEC's live feed times out now and then (32× on 2026-11-16): two more tries
+
+
+def feed_page_retry(start):
+    """feed_page with 2 retries. Still failing → raise (the whole scan runs again later, nothing skipped)."""
+    for wait in FEED_RETRY_WAIT + (None,):
+        try:
+            return feed_page(start)
+        except (TimeoutError, OSError):   # URLError / socket timeouts are OSErrors
+            if wait is None:
+                raise
+            time.sleep(wait)
+
+
 def feed_page(start):
     """[(accession, issuer cik)] of Form 4 filings, newest first (one entry per filing: the Issuer line)."""
     root = ET.fromstring(_get(FEED + str(start)))
@@ -258,7 +272,7 @@ class InsiderWatch:
         officer/director buy that wasn't looked up lately, its other Form 4s of the last 14 days."""
         new, stop = [], False
         for page in range(MAX_PAGES):
-            for acc, cik in feed_page(page * 100):
+            for acc, cik in feed_page_retry(page * 100):
                 if acc in seen:
                     stop = True
                     break

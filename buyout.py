@@ -88,6 +88,8 @@ SPIKE_LEVELS = (0.10, 0.20)  # alert at +10%, again at +20% (same day)
 SPIKE_LOUD, SPIKE_LOUD_PACE = 0.15, 5   # with sound only from +15% on 5x normal volume
 TABLE_WEEKDAY = 4            # the candidate table is posted on Fridays (daily screens still update the list)
 SEEN_DAYS = 10
+SEC_MAX_AGE_DAYS = 3        # older filings are not news; seen{} forgets after SEEN_DAYS → old ones came back (2026-11-17)
+EVENT_DAYS = 3              # 📰 same story from several sites (different headlines) = one post per stock in this window
 
 BO_WORDS = re.compile(
     r"\b(takeover|take[- ]private|buyout|buy[- ]out|to be acquired|agrees? to be acquired|acquisition (offer|proposal|"
@@ -125,6 +127,18 @@ OFFERING = re.compile(r"\b((public|direct|secondary|stock|share|equity|underwrit
 # Not news about the company: insider Form 4 lines (👥 insider scan covers buys), opinion questions
 # ("Should ... Investors?", "Might Change The Case For Investing In ...") — 2026-11-15 noise.
 NOT_MAJOR = re.compile(r"(\bForm 4\b|\?\s*$|case for investing|should .{0,60}investors)", re.I)
+# An insider buying / selling shares ("CFO Acquires 10,000 Shares", "CFO pays $4.21 a share for 10,000 … shares"):
+# the 👥 insider scan covers these; MAJOR matched them via CFO/acquires → 3 posts for one buy (BW, 2026-11-16)
+INSIDER_TRADE = re.compile(r"\b(CEO|CFO|COO|director|chair\w*|insider|officer|president|EVP|SVP|founder)\b.{0,80}?"
+                           r"\b(buys|bought|acquires?|acquired|purchases?d?|pays|paid|sells?|sold|adds?|added)\b"
+                           r".{0,80}?\bshares?\b", re.I)
+QUESTION = re.compile(r"\?\s*$")
+# Words that don't tell two stories apart (for the same-event check)
+EVENT_STOP = {"ceo", "cfo", "coo", "chief", "executive", "officer", "financial", "names", "named", "appoints",
+              "appointed", "announces", "announced", "reports", "inc", "corp", "corporation", "company", "ltd", "plc",
+              "the", "new", "nyse", "nasdaq", "stock", "shares", "share", "says", "update", "news", "and", "for",
+              "with", "from", "its", "this", "after", "amid", "over", "into", "what", "how", "why", "will"}
+
 JUNK = re.compile(r"(class action|shareholder alert|investors? (who|with) (lost|losses)|law firm|rosen|pomerantz|"
                   r"levi & korsinsky|bragar|kahn swick|halper sadeh|stock (price|quote)|price target|"
                   r"shares (gap|rise|fall|drop|jump)|stock (rises|falls|jumps|drops))", re.I)
@@ -475,6 +489,23 @@ def major(title, t, name):
     """📰 major news: a big-event word, the company named in the headline, and not opinion / Form 4 noise."""
     return (bool(MAJOR.search(title) or OFFERING.search(title)) and not NOT_MAJOR.search(title)
             and in_title(title, t, name))
+
+
+def event_words(title, t, name):
+    """Names and numbers in a headline minus the company's own name: "Omnicom's Acxiom Names Gary Laben CEO" →
+    {acxiom, gary, laben}. Two headlines sharing 2 of these (or the only one) are the same story."""
+    own = {w.lower() for w in re.findall(r"[A-Za-z]+", name or "")} | {t.lower()}
+    out = set()
+    for w in re.findall(r"[A-Z][\w&-]+|\$?\d[\d,.]*[MBK]?", title or ""):
+        w = re.sub(r"[’']s$", "", w).lower().strip(".,")
+        if len(w) >= 3 and w not in own and w not in EVENT_STOP:
+            out.add(w)
+    return out
+
+
+def same_event(a, b):
+    both = len(set(a) & set(b))
+    return both >= 1 and both >= min(2, len(a), len(b))
 
 
 def news_key(title):
@@ -1030,10 +1061,20 @@ class BuyoutWatch:
                 if (h["date"] and h["date"] < cut) or JUNK.search(h["title"]) or not mentions(h["title"] + " " + h["desc"], t, name):
                     continue
                 hit = bo_hit(h["title"])
-                if not hit and not major(h["title"], t, name):
+                if hit and QUESTION.search(h["title"]):
+                    hit = None   # "Why Didn't Tilray Make a Bid for …?" is opinion, not takeover news (2026-11-17)
+                if not hit and (not major(h["title"], t, name) or INSIDER_TRADE.search(h["title"])):
                     continue
                 if not new("n:" + news_key(h["title"]), "news:" + t):
                     continue
+                ev = bo.setdefault("ev", {})
+                ew = event_words(h["title"], t, name)
+                cut_ev = (datetime.now(timezone.utc) - timedelta(days=EVENT_DAYS)).strftime("%Y-%m-%d")
+                ev[t] = [e for e in ev.get(t, []) if e[0] >= cut_ev]
+                if not hit and any(same_event(ew, e[1]) for e in ev[t]):
+                    continue   # same story as a 📰 already posted (another site's headline)
+                if ew:
+                    ev[t] = (ev[t] + [[today, sorted(ew)]])[-20:]
                 head = (f"🎯 <b>${t}</b> takeover-type news" if hit else f"📰 <b>${t}</b> major news")
                 when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""
                 self.send(f"{head}\n{html.escape(h['title'])}\n<i>{html.escape(h['source'] or 'news')}</i>{when}\n"
@@ -1062,12 +1103,17 @@ class BuyoutWatch:
         for k in [k for k, v in seen.items() if v < old]:
             del seen[k]
         init[:] = [s for s in init if s.split(":", 1)[1] in cands]
+        for k in [k for k in bo.get("ev", {}) if k not in cands]:
+            del bo["ev"][k]
         return changed
 
     def _sec(self, t):
         import news  # only for the SEC helpers (CIK lookup + submissions JSON)
         out = []
+        too_old = datetime.now(timezone.utc) - timedelta(days=SEC_MAX_AGE_DAYS)
         for f in news.sec_filings(t)[:15]:
+            if f.get("date") and f["date"] < too_old:
+                continue   # weeks-old filing came back after seen{} forgot it (OPK/EOLS re-posted 2026-11-17)
             form = f["form"].upper()
             items = [x for x in f["items"] if x in SEC_ITEMS]
             m = SEC_FORM.search(form)
