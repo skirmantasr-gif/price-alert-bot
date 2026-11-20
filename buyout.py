@@ -126,7 +126,14 @@ OFFERING = re.compile(r"\b((public|direct|secondary|stock|share|equity|underwrit
                       r"at-the-market|ATM|million|billion|[\d.]+[MB]) offering|offering of)\b", re.I)
 # Not news about the company: insider Form 4 lines (👥 insider scan covers buys), opinion questions
 # ("Should ... Investors?", "Might Change The Case For Investing In ...") — 2026-11-15 noise.
-NOT_MAJOR = re.compile(r"(\bForm 4\b|\?\s*$|case for investing|should .{0,60}investors)", re.I)
+# 2026-11-20 more noise: pay (stock grants / awards vesting / shares withheld), title shuffles ("CFO doubles as
+# president", "COO moves to"), AGM votes, bond consent fees, resale registrations, law-firm "investor alerts".
+NOT_MAJOR = re.compile(r"(\bForm 4\b|\?\s*$|case for investing|should .{0,60}investors|"
+                       r"\bstock (grants?|awards?|options? grants?)\b|\bawards? vests?\b|\bvest(s|ed|ing)\b|"
+                       r"\bRSUs?\b|restricted stock|shares withheld|grant conversion|"
+                       r"\bdoubles as\b|\bmoves to\b|re-?elects? (the )?(board|directors?)|approves? (the )?auditor|"
+                       r"consent (fee|solicitation)|\bresell\b|\bresale\b|"
+                       r"investor alert|hagens berman|\bBFA law\b|shareholder rights|investigation on behalf)", re.I)
 # An insider buying / selling shares ("CFO Acquires 10,000 Shares", "CFO pays $4.21 a share for 10,000 … shares"):
 # the 👥 insider scan covers these; MAJOR matched them via CFO/acquires → 3 posts for one buy (BW, 2026-11-16)
 INSIDER_TRADE = re.compile(r"\b(CEO|CFO|COO|director|chair\w*|insider|officer|president|EVP|SVP|founder)\b.{0,80}?"
@@ -470,7 +477,7 @@ def in_title(title, t, name):
                 and nxt.group(1).lower() not in (name or "").lower()):
             continue
         return True
-    toks = re.findall(r"[A-Za-z][A-Za-z&\-]+", name or "")
+    toks = re.findall(r"[A-Za-z][A-Za-z0-9&\-]+", name or "")   # digits too: "Velo3D" was cut to "Velo" (2026-11-20)
     words = [w for w in toks if len(w) >= 3 and w.lower() not in ("and", "the", "of")]
     words = [w for w in words if w in _name_words(name) or w.lower() not in _NAME_SKIP][:2]
     if not words or len(words[0]) < 4:

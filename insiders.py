@@ -61,7 +61,7 @@ def feed_page_retry(start):
     for wait in FEED_RETRY_WAIT + (None,):
         try:
             return feed_page(start)
-        except (TimeoutError, OSError):   # URLError / socket timeouts are OSErrors
+        except (TimeoutError, OSError, ET.ParseError):   # URLError / socket timeouts are OSErrors; SEC sometimes sends a cut-off page
             if wait is None:
                 raise
             time.sleep(wait)
@@ -159,6 +159,9 @@ def sec_shares(cik):
         return None
 
 
+SEC_CHECK_BELOW = 2e9   # Yahoo market values above this are trusted as they are
+
+
 def market_cap(tk, price=None, cik=None):
     """Yahoo's market value, checked against SEC shares x price: Yahoo said NEXGEL was worth $2.1M while
     SEC showed 9.7M shares x $3.88 = $38M (2026-11-15). If they differ 3x+ (or Yahoo has none), SEC wins."""
@@ -167,7 +170,9 @@ def market_cap(tk, price=None, cik=None):
         cap = movers.market_cap(tk)
     except Exception:
         cap = None
-    if price and cik and SEC_CONTACT:
+    # Only small Yahoo values are doubted: for ADRs (TSM = 5 ordinary shares) SEC shares x ADR price is far too
+    # high — TSM showed "value $9130.6B" on 2026-11-20 while Yahoo had the right ~$1.8T.
+    if price and cik and SEC_CONTACT and (not cap or cap < SEC_CHECK_BELOW):
         sh = sec_shares(cik)
         if sh:
             sec = sh * price
@@ -215,6 +220,9 @@ def _usd(v):
     return f"${v / 1e6:.1f}M" if v >= 1e6 else f"${v / 1e3:.0f}k"
 
 
+AVG_SANE = (0.4, 2.5)   # price now / insiders' average outside this = not the same kind of share
+
+
 def message(tk, company, n, total, rows, cap=None, now_px=None, avg_px=None):
     loud = n >= 3 or total >= LOUD_USD or any(TOP_ROLE.search(r[2]) for r in rows)
     first, last = rows[0][0], rows[-1][0]
@@ -227,8 +235,10 @@ def message(tk, company, n, total, rows, cap=None, now_px=None, avg_px=None):
     facts = []
     if cap:
         facts.append(f"value {_usd(cap) if cap < 1e9 else f'${cap / 1e9:.1f}B'}")
-    if now_px and avg_px:
+    if now_px and avg_px and AVG_SANE[0] <= now_px / avg_px <= AVG_SANE[1]:
         facts.append(f"price now ${now_px:,.2f} ({(now_px / avg_px - 1) * 100:+.0f}% vs their average ${avg_px:,.2f})")
+    elif now_px:   # far apart = other share class / ADR ratio / currency (TSM +192% on 2026-11-20), not a real move
+        facts.append(f"price now ${now_px:,.2f}")
     if facts:
         lines.append(" · ".join(facts))
     lines.append(f'<a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;type=4&amp;'

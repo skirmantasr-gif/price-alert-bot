@@ -39,7 +39,9 @@ _cache = {}                   # symbol -> (time, summary or None)
 
 
 def _get(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; price-alert-bot/1.0)"})
+    # CBOE answers 403 without a Referer since 2026-11-20 (seen from the server and the Mac)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; price-alert-bot/1.0)",
+                                               "Referer": "https://www.cboe.com/"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = r.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
