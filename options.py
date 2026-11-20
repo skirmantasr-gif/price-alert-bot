@@ -10,7 +10,9 @@ What is shown and why (owner, 2026-11-12: "price can depend on option due date")
   - put/call open-interest ratio
   - unusual activity: contracts trading far above existing open positions (new bets; can be buys OR sells)
 Used in: ☀️ daily check (expiry week), price / volume alerts (≤ 5 days before a monthly expiry), 📊 earnings
-patterns (expected move vs past moves), 🧭 hourly outlook (AI input), quiet 🎲 unusual-activity alerts.
+patterns (expected move vs past moves), 🧭 hourly outlook (AI input), quiet 🎲 unusual-activity alerts,
+📼 HistoryWatch: one snapshot per trading day for watchlist stocks with an FDA date ahead (owner 2026-11-20: free
+sources have no past option chains, so we keep our own to compare the next PDUFA against).
 GitHub only; every failure is silent for the caller (returns None)."""
 import calendar
 import html
@@ -261,3 +263,105 @@ def market_open_ny():
     except Exception:
         return False
     return n.weekday() < 5 and "09:30" <= n.strftime("%H:%M") < "16:00"
+
+
+# ---------------------------------------------------------------- 📼 option history before FDA dates
+HIST_KINDS = ("fda",)        # _cal event kinds that get a daily options record
+HIST_BEFORE = 30             # start this many days before the event
+HIST_AFTER = 5               # and keep recording this many days after it (the reaction)
+HIST_MAX_EVENTS = 20         # oldest records dropped beyond this (state size)
+HIST_EXPIRIES = 3
+
+
+def snapshot(price, iv30, rows, today=None):
+    """Compact record of one chain: per nearest expiry [exp, atm strike, straddle % or None, call vol, put vol,
+    call OI, put OI]; the 5 biggest open positions; up to 3 unusual trades."""
+    today = today or date.today()
+    exps = sorted({r[0] for r in rows if r[0] >= today})[:HIST_EXPIRIES]
+    out = []
+    for e in exps:
+        m = [r for r in rows if r[0] == e]
+        atm = min({r[2] for r in m}, key=lambda k: abs(k - price))
+        legs = [r for r in m if r[2] == atm]
+        good = len(legs) == 2 and all(r[5] > 0 and r[6] >= r[5] for r in legs) and price > 0
+        st = round(sum((r[5] + r[6]) / 2 for r in legs) / price * 100, 1) if good else None
+        out.append([e.isoformat(), atm, st,
+                    int(sum(r[4] for r in m if r[1] == "C")), int(sum(r[4] for r in m if r[1] == "P")),
+                    int(sum(r[3] for r in m if r[1] == "C")), int(sum(r[3] for r in m if r[1] == "P"))])
+    live = [r for r in rows if r[0] >= today]
+    top = sorted(live, key=lambda r: -r[3])[:5]
+    return {"px": round(price, 4), "iv30": round(float(iv30), 1) if iv30 else None, "exps": out,
+            "top": [[r[0].isoformat(), r[1], r[2], int(r[3]), int(r[4])] for r in top],
+            "unu": [[u[0], u[1], u[2], u[3], u[4], round(u[5])] for u in unusual(rows, today)[:3]]}
+
+
+def _ny_now():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return None
+
+
+class HistoryWatch:
+    """📼 Saves one options snapshot per trading day (near the close: 15:30-20:00 New York) for each watchlist
+    stock with an FDA date in the next HIST_BEFORE days, until HIST_AFTER days after it. Silent; state _opth
+    {"TICKER:YYYY-MM-DD": {"t", "event", "label", "snaps": {day: snapshot}}} (the event date is kept here because
+    _cal drops passed events)."""
+
+    def __init__(self, tickers, fetch=None, now=None):
+        self.tickers = set(tickers)
+        self.fetch = fetch or (lambda sym: parse(json.loads(_get(URL.format(urllib.parse.quote(sym))))))
+        self.now = now or _ny_now
+        self.last_day = None
+
+    @staticmethod
+    def enabled():
+        return ON
+
+    def check(self, state):
+        n = self.now()
+        if n is None or n.weekday() >= 5 or not ("15:30" <= n.strftime("%H:%M") < "20:00"):
+            return False
+        today = n.date()
+        day = today.isoformat()
+        if self.last_day == day:
+            return False
+        self.last_day = day
+        h = state.setdefault("_opth", {})
+        for t, iso, kind, label in (state.get("_cal") or []):
+            if t in self.tickers and kind in HIST_KINDS:
+                left = (datetime.strptime(iso, "%Y-%m-%d").date() - today).days
+                if 0 <= left <= HIST_BEFORE:
+                    h.setdefault(f"{t}:{iso}", {"t": t, "event": iso, "label": label, "snaps": {}})
+        changed = False
+        for key, rec in h.items():
+            ev = datetime.strptime(rec["event"], "%Y-%m-%d").date()
+            if not (-HIST_BEFORE <= (today - ev).days <= HIST_AFTER) or day in rec["snaps"]:
+                continue
+            try:
+                price, iv30, rows = self.fetch(rec["t"])
+                if not price or not rows:
+                    continue
+                rec["snaps"][day] = snapshot(price, iv30, rows, today)
+                changed = True
+                log.info("Options history: saved %s (%s days to %s)", rec["t"], (ev - today).days, rec["label"])
+            except Exception as e:
+                log.info("Options history: %s unavailable (%s)", rec["t"], type(e).__name__)
+        if len(h) > HIST_MAX_EVENTS:
+            for key in sorted(h, key=lambda k: h[k]["event"])[:len(h) - HIST_MAX_EVENTS]:
+                del h[key]
+            changed = True
+        return changed
+
+
+def history_lines(rec):
+    """Readable table of one record (for Claude / a later report)."""
+    out = [f"{rec['t']} · {rec['label']} on {rec['event']}"]
+    for day in sorted(rec["snaps"]):
+        s = rec["snaps"][day]
+        e = s["exps"][0] if s["exps"] else None
+        bit = (f"next exp {e[0]} straddle {'±%.0f%%' % e[2] if e[2] is not None else '?'} · vol C/P {e[3]}/{e[4]}"
+               f" · OI C/P {e[5]}/{e[6]}") if e else "no expiries"
+        out.append(f"{day} ${s['px']:.2f} iv30 {s['iv30']} · {bit}")
+    return out

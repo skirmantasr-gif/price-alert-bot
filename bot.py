@@ -720,6 +720,8 @@ def main():
         threading.Thread(target=lambda: context.daily_lines(TICKERS), daemon=True).start()
     opt_watch = (options.UnusualWatch(send_telegram, TICKERS)
                  if options and HEARTBEAT_ROLE != "phone" and options.UnusualWatch.enabled() else None)
+    opt_hist = (options.HistoryWatch(TICKERS)
+                if options and HEARTBEAT_ROLE != "phone" and options.HistoryWatch.enabled() else None)
     wk_review = (weekly.WeeklyReview(send_telegram, practice)
                  if weekly and HEARTBEAT_ROLE != "phone" and weekly.WeeklyReview.enabled() else None)
     board = None
@@ -752,6 +754,8 @@ def main():
             checks.append(("Weekly review", wk_review.check))
         if opt_watch:
             checks.append(("Options activity", lambda st: opt_watch.check(st, options.market_open_ny())))
+        if opt_hist:
+            checks.append(("Options history", opt_hist.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if board:
