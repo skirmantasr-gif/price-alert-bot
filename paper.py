@@ -9,7 +9,7 @@ Portfolios (each starts with €100, run side by side on the same alerts):
            exact copy of 👍 (2026-11-10), so the difference between the two shows whether the mood filter helps
   insider  👥 every insider cluster buy (insiders.py: 2+ officers/directors buying on the open market), added
            2026-11-15. Own SLOWER exits (EXITS below): studies find the insider edge builds over months, so the
-           3% profit lock would cut it off: stop -15%, take profit +30%, no profit lock, sold after 90 days.
+           3% profit lock would cut it off. Since 2026-11-20 (4-year backtest): no stop, no target, sold after 90 days.
            Insider signals go ONLY here (the other four keep their original rules).
   + benchmark: the same €100 in the S&P 500 (SPY) from the start date
 
@@ -99,7 +99,10 @@ PORTFOLIOS = {
 }
 ONLY = {"insider": "insider"}  # source traded by ONE portfolio only (never reaches the other rules)
 # Per-portfolio exits (default: the module constants). trail None = no profit lock; days = sell after N days.
-EXITS = {"insider": {"stop": -0.15, "take": 0.30, "trail": None, "days": 90}}
+# 👥 owner 2026-11-20 after the 4-year backtest (3,276 clusters, studies/insider_backtest_report_2026-11-20.txt):
+# with -15% / +30% the trades did 0.7% WORSE than small caps; the same signals simply held 90 days did 2.0%
+# better (the stop sold 858 trades, often just before they recovered) -> no stop, no target, sold after 90 days.
+EXITS = {"insider": {"stop": None, "take": None, "trail": None, "days": 90}}
 # 👥 owner 2026-11-20: "€10 per cluster" — every new cluster is bought, no 10-position cap; when the cash is used up,
 # €10 of fresh play money is added ("topped up") so the test keeps growing. Returns are measured on €100 + top-ups.
 TOPUP = {"insider": 10.0}
@@ -348,9 +351,11 @@ def step(st, now, data):
                 peak = max(peak, b[2])
                 trail = bool(tr) and peak / pos["p0"] - 1 >= tr[0] and b[2] <= peak * (1 - tr[1])
                 old = bool(days) and b[0] - pos["t"] >= days * 86400
-                if ret <= stop or ret >= take or trail or old:
-                    why = (f"stop {stop * 100:.0f}%".replace("-", "−") if ret <= stop else
-                           f"take profit +{take * 100:.0f}%" if ret >= take else
+                hit_stop = stop is not None and ret <= stop
+                hit_take = take is not None and ret >= take
+                if hit_stop or hit_take or trail or old:
+                    why = (f"stop {stop * 100:.0f}%".replace("-", "−") if hit_stop else
+                           f"take profit +{take * 100:.0f}%" if hit_take else
                            f"held {days} days (time limit)" if old else
                            f"profit lock: was up {(peak / pos['p0'] - 1) * 100:+.1f}%, fell {tr[1] * 100:.0f}% from the high")
                     nxt = bars[i + 1] if i + 1 < len(bars) else None
@@ -570,8 +575,8 @@ def report(st, now, data, title):
                  f"(from +{TRAIL_START * 100:.0f}%, a {TRAIL * 100:.0f}% drop from the high), "
                  f"at −8% / +15%, or on a DOWN call; no time limit; 0.15% fee each way; currency moves ignored. "
                  f"🌡️ Mood-filtered = 👍 but no new buys while the market mood is defensive. "
-                 f"👥 Insider clusters = every insider cluster buy, slower exits: −15% / +30%, no profit lock, "
-                 f"sold after 90 days (the insider edge builds over months).</i>")
+                 f"👥 Insider clusters = every insider cluster buy, held 90 days: no stop, no target, no profit "
+                 f"lock (a 4-year backtest: stops cut the edge; holding beat small caps by ~2% per trade).</i>")
     return "\n".join(lines)
 
 
@@ -592,7 +597,8 @@ def account(st, key, now, data):
         if "exit" in pos:
             plan = "selling at the next price"
         else:
-            sell = [f"stop ≤{pos['p0'] * (1 + ex['stop']):,.4g}", f"target ≥{pos['p0'] * (1 + ex['take']):,.4g}"]
+            sell = ([f"stop ≤{pos['p0'] * (1 + ex['stop']):,.4g}"] if ex["stop"] is not None else []) + \
+                   ([f"target ≥{pos['p0'] * (1 + ex['take']):,.4g}"] if ex["take"] is not None else [])
             tr = ex["trail"]
             if tr and hi / pos["p0"] - 1 >= tr[0]:
                 sell.insert(0, f"🔒 profit lock ≤{hi * (1 - tr[1]):,.4g}")
