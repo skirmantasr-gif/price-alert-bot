@@ -25,12 +25,29 @@ class InsiderPortfolio(unittest.TestCase):
         self.assertIn("AAA", st["pf"]["strong"]["pending"])
         self.assertNotIn("AAA", st["pf"]["insider"]["pending"])
 
-    def test_quiet_cluster_buys_ten_loud_buys_fifteen(self):
+    def test_every_cluster_ten_euros(self):          # owner 2026-11-20: "€10 per cluster" (was €10 quiet / €15 loud)
         st = paper.new_state(ny(*TUE, 6))
         paper.on_signal(st, sig("AAA", c="low"))
         paper.on_signal(st, sig("BBB", c="high"))
         pend = st["pf"]["insider"]["pending"]
-        self.assertEqual((pend["AAA"]["eur"], pend["BBB"]["eur"]), (paper.SIZE_EUR, paper.SIZE_STRONG_EUR))
+        self.assertEqual((pend["AAA"]["eur"], pend["BBB"]["eur"]), (10.0, 10.0))
+
+    def test_tops_up_when_cash_runs_out_and_no_position_cap(self):
+        st = paper.new_state(ny(*TUE, 6))
+        for i in range(14):                              # €140 of clusters on a €100 start, more than MAX_OPEN
+            paper.on_signal(st, sig(f"T{i:02d}"))
+        pf = st["pf"]["insider"]
+        self.assertEqual(len(pf["pending"]), 14)
+        self.assertAlmostEqual(pf["topup"], 40.0)
+        self.assertAlmostEqual(pf["cash"], 0.0)
+        self.assertAlmostEqual(paper.base(pf), 140.0)
+        self.assertTrue(any(x.get("a") == "topup" for x in pf["log"]))
+        self.assertNotIn("topup", st["pf"]["strong"])     # other portfolios keep their cash limit
+
+    def test_statement_shows_money_put_in(self):
+        pf = {"topup": 20.0}
+        self.assertEqual(paper._put_in(pf), " on €100 + €20 added")
+        self.assertEqual(paper._put_in({}), "")
 
     def test_no_profit_lock_but_wider_stop_and_target(self):
         st = paper.new_state(ny(*TUE, 6))
