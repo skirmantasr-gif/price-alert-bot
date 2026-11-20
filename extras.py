@@ -375,6 +375,10 @@ FDA_RE = re.compile(r"\bPDUFA\b|target action date|\bFDA (decision|action) (date
 ADCOM_RE = re.compile(r"advisory committee", re.I)
 
 
+ROLL_DAYS = 180        # a yearless date this far in the past means next year
+EARN_MAX_AHEAD = 120   # no company announces an earnings date further ahead; such entries are misreads
+
+
 def _first_date(text, start, today):
     for m in DATE_RE.finditer(text, start):
         mon, d, y = _MON[m.group(1).lower()[:3]], int(m.group(2)), m.group(3)
@@ -383,8 +387,10 @@ def _first_date(text, start, today):
                 dt = date(int(y), mon, d)
             else:
                 dt = date(today.year, mon, d)
-                if dt < today - timedelta(days=7):
-                    dt = date(today.year + 1, mon, d)
+                if dt < today - timedelta(days=ROLL_DAYS):
+                    dt = date(today.year + 1, mon, d)      # "Jan 15" read in December
+                elif dt < today - timedelta(days=7):
+                    return None   # weeks ago = an old article ("reports Nov 4" seen Nov 12 became 2027-11-04)
         except ValueError:
             continue
         if today <= dt <= today + timedelta(days=365):
@@ -435,7 +441,9 @@ def calendar_add(state, ticker, events):
 def calendar_upcoming(state, days=14):
     today = local_now().date()
     cal = state.get("_cal", [])
-    cal[:] = [e for e in cal if e[1] >= (today - timedelta(days=1)).isoformat()]
+    far = (today + timedelta(days=EARN_MAX_AHEAD)).isoformat()
+    cal[:] = [e for e in cal if e[1] >= (today - timedelta(days=1)).isoformat()
+              and not (e[2] == "earnings" and e[1] > far)]
     end = (today + timedelta(days=days)).isoformat()
     return sorted((e for e in cal if today.isoformat() <= e[1] <= end), key=lambda e: e[1])
 

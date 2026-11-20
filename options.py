@@ -266,10 +266,10 @@ def market_open_ny():
 
 
 # ---------------------------------------------------------------- 📼 option history before FDA dates
-HIST_KINDS = ("fda",)        # _cal event kinds that get a daily options record
-HIST_BEFORE = 30             # start this many days before the event
+HIST_KINDS = {"fda": 30, "earnings": 7}   # _cal event kind -> start recording this many days before
+HIST_BEFORE = 30             # longest window (FDA)
 HIST_AFTER = 5               # and keep recording this many days after it (the reaction)
-HIST_MAX_EVENTS = 20         # oldest records dropped beyond this (state size)
+HIST_MAX_EVENTS = 80         # oldest records dropped beyond this (state size); 💊 calendar adds every US FDA date
 HIST_EXPIRIES = 3
 
 
@@ -329,11 +329,14 @@ class HistoryWatch:
             return False
         self.last_day = day
         h = state.setdefault("_opth", {})
-        for t, iso, kind, label in (state.get("_cal") or []):
-            if t in self.tickers and kind in HIST_KINDS:
+        events = [(t, iso, kind, label) for t, iso, kind, label in (state.get("_cal") or []) if t in self.tickers]
+        events += [(e["t"], e["date"], "fda", "FDA decision date (PDUFA)")       # 💊 all US stocks (catalysts.py)
+                   for e in ((state.get("_fdacal") or {}).get("ev") or {}).values()]
+        for t, iso, kind, label in events:
+            if kind in HIST_KINDS:
                 left = (datetime.strptime(iso, "%Y-%m-%d").date() - today).days
-                if 0 <= left <= HIST_BEFORE:
-                    h.setdefault(f"{t}:{iso}", {"t": t, "event": iso, "label": label, "snaps": {}})
+                if 0 <= left <= HIST_KINDS[kind]:
+                    h.setdefault(f"{t}:{iso}", {"t": t, "event": iso, "label": label, "kind": kind, "snaps": {}})
         changed = False
         for key, rec in h.items():
             ev = datetime.strptime(rec["event"], "%Y-%m-%d").date()

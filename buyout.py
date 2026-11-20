@@ -83,6 +83,12 @@ SECTOR_SHORT = {"Healthcare": "HC", "Technology": "Tech", "Communication Service
                 "Consumer Cyclical": "Cons", "Consumer Defensive": "Stap", "Energy": "Enrg", "Basic Materials": "Mat",
                 "Utilities": "Util", "Financial Services": "Fin", "Real Estate": "RE"}
 LIVE_SECONDS = 300          # candidate news / SEC / price checks
+# ⚡ Alpaca (Benzinga real-time, all symbols) checked every minute: Google News was blocked most of 2026-11-16..20,
+# and candidate news / 📣 sale signals / rumour discovery all depended on it (owner: "find a way to send it earlier")
+FAST_SECONDS = 60
+FAST_SIG_GAP = 120         # an early 📣 scan (Alpaca only) at most this often
+RUMOUR_KEEP_H = 48         # Alpaca takeover headlines kept for the daily discovery
+RUMOUR_MAX = 150
 GOOGLE_SECONDS = 1800       # per-candidate Google News search (Google blocks frequent automated searches)
 SPIKE_LEVELS = (0.10, 0.20)  # alert at +10%, again at +20% (same day)
 SPIKE_LOUD, SPIKE_LOUD_PACE = 0.15, 5   # with sound only from +15% on 5x normal volume
@@ -212,6 +218,7 @@ SIGNAL_TYPES = {
     "unsolicited_offer": "📨 Unsolicited / non-binding takeover offer made public",
     "activist_sale": "📣 Activist pushing for a sale",
 }
+RUMOUR_LABEL = "🗣️ Takeover rumour (anonymous sources — less reliable than an announcement)"
 SIGNAL_SYSTEM = (
     "You read news headlines. For each headline about a listed company that may be SOLD, give the TARGET company "
     "(never the buyer), its stock ticker if you know it (else empty) and the kind of signal:\n"
@@ -426,6 +433,24 @@ def _rss(url):
 def google(q):
     return _rss("https://news.google.com/rss/search?" + urllib.parse.urlencode(
         {"q": q, "hl": "en-US", "gl": "US", "ceid": "US:en"}))
+
+
+def alpaca_heads(hours=48):
+    """Alpaca's latest news (all symbols) as _rss-style dicts (+ symbols), newer than `hours`; [] without keys."""
+    try:
+        import alpaca
+        items = alpaca.recent()
+    except Exception:
+        return []
+    cut = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return [{"title": it["title"], "desc": it.get("desc") or "", "link": it.get("link") or "", "date": it.get("date"),
+             "source": it.get("source") or "Benzinga", "symbols": it.get("symbols") or []}
+            for it in items if it.get("title") and (not it.get("date") or it["date"] >= cut)]
+
+
+def takeoverish(title):
+    """Cheap local pre-filter for the 📣 AI check / discovery: a takeover / sale word, not a law-firm notice."""
+    return bool(title) and not JUNK.search(title) and bool(STORY_WORDS.search(title) or bo_hit(title))
 
 
 def _name_words(name):
@@ -675,6 +700,8 @@ class BuyoutWatch:
         self.last_google = {}
         self.fail_notified = False
         self.sig_thread, self.sig_result, self.last_sig = None, None, float("-inf")
+        self.last_fast, self.last_fast_sig = float("-inf"), float("-inf")
+        self.rumours = {}     # title -> head (Alpaca takeover headlines for the daily discovery)
 
     @staticmethod
     def enabled():
@@ -741,6 +768,7 @@ class BuyoutWatch:
                 if not netgate.is_blocked(e):
                     log.warning("Buyout discovery search failed: %s", type(e).__name__)
             time.sleep(2)
+        heads = list(getattr(self, "rumours", {}).values()) + heads    # ⚡ Alpaca first: works when Google is blocked
         heads = list({h["title"]: h for h in heads}.values())[:60]
         if not heads:
             return []
@@ -775,10 +803,10 @@ class BuyoutWatch:
         return out
 
     # -------- 📣 public sale signals (background thread: Google + AI + Yahoo; state passed in as a copy)
-    def _signals_job(self, seen):
-        heads = []
+    def _signals_job(self, seen, google_too=True):
+        heads = [h for h in alpaca_heads(SIGNAL_MAX_AGE_H) if takeoverish(h["title"])]
         cut = datetime.now(timezone.utc) - timedelta(hours=SIGNAL_MAX_AGE_H)
-        for q in SIGNAL_QUERIES:
+        for q in (SIGNAL_QUERIES if google_too else []):
             try:
                 heads += [h for h in google(q) if not JUNK.search(h["title"]) and (not h["date"] or h["date"] >= cut)]
             except Exception as e:
@@ -802,7 +830,7 @@ class BuyoutWatch:
             items += [(x, part[x["id"]]) for x in got if isinstance(x.get("id"), int) and 0 <= x["id"] < len(part)]
         found = set()
         for x, h in items:
-            if x.get("type") not in SIGNAL_TYPES:
+            if x.get("type") not in SIGNAL_TYPES and x.get("type") != "rumour":
                 continue
             company = (x.get("company") or "")[:80]
             hit = yahoo_find(company, re.sub(r"[^A-Z]", "", (x.get("ticker") or "").upper())[:5])
@@ -815,6 +843,8 @@ class BuyoutWatch:
             cap = r["mcap"] if r else None
             if cap is not None and not SIGNAL_MIN_CAP <= cap <= SIGNAL_MAX_CAP:
                 continue
+            if x["type"] == "rumour" and not (r and r["score"] >= MIN_SCORE - 1):
+                continue    # anonymous-source stories only for stocks that also fit the buyout fingerprint
             why_old = self._old_news(hit[0], hit[1], company, h)
             if why_old:
                 log.info("Sale signals: skipped (%s)", why_old)
@@ -891,13 +921,15 @@ class BuyoutWatch:
                 ctx = context.lines(x["t"], market=False)
             except Exception:
                 ctx = []
-            self.send(f"🎯📣 <b>${x['t']}</b> PUBLIC SALE SIGNAL — {SIGNAL_TYPES[x['type']]}\n"
+            rumour = x["type"] == "rumour"
+            self.send(f"🎯{'🗣️' if rumour else '📣'} <b>${x['t']}</b> "
+                      f"{'TAKEOVER RUMOUR' if rumour else 'PUBLIC SALE SIGNAL'} — {SIGNAL_TYPES.get(x['type'], RUMOUR_LABEL)}\n"
                       f"{html.escape(x['title'])}\n<i>{html.escape(x['source'] or 'news')}</i>{when}\n"
                       + (" · ".join(facts) + watch + "\n" if facts or watch else "")
                       + ("".join(c + "\n" for c in ctx))
                       + f'<a href="{html.escape(x["link"])}">Open</a>\n'
                       "<i>Public sale signals came before many past buyouts, but most reviews end without a deal "
-                      "or at a small premium. Not advice.</i>", None)
+                      "or at a small premium. Not advice.</i>", True if rumour else None)
             extras.remember(x["t"], f"🎯📣 ${x['t']} {x['title']}", x["link"])
             if state is not None:   # scored in the 🎓 review (not traded: paper.NOT_TRADED)
                 try:
@@ -1031,6 +1063,100 @@ class BuyoutWatch:
         bo["wk"] = {"added": [], "dropped": [], "found": []}
         log.info("Buyout screen: %d rows, %d candidates, %d added, %d dropped", len(rows), len(cands), len(added), len(dropped))
 
+
+    def _post_heads(self, bo, t, name, heads, new, kind="news"):
+        """🎯 / 📰 posts for one candidate's headlines (Yahoo / Google / ⚡ Alpaca). True if something was posted."""
+        cut = datetime.now(timezone.utc) - timedelta(hours=48)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        posted = False
+        for h in heads:
+            if (h["date"] and h["date"] < cut) or JUNK.search(h["title"]) or not mentions(h["title"] + " " + h["desc"], t, name):
+                continue
+            hit = bo_hit(h["title"])
+            if hit and QUESTION.search(h["title"]):
+                hit = None   # "Why Didn't Tilray Make a Bid for …?" is opinion, not takeover news (2026-11-17)
+            if not hit and (not major(h["title"], t, name) or INSIDER_TRADE.search(h["title"])):
+                continue
+            if not new("n:" + news_key(h["title"]), f"{kind}:{t}"):
+                continue
+            ev = bo.setdefault("ev", {})
+            ew = event_words(h["title"], t, name)
+            cut_ev = (datetime.now(timezone.utc) - timedelta(days=EVENT_DAYS)).strftime("%Y-%m-%d")
+            ev[t] = [e for e in ev.get(t, []) if e[0] >= cut_ev]
+            if not hit and any(same_event(ew, e[1]) for e in ev[t]):
+                continue   # same story as a 📰 already posted (another site's headline)
+            if ew:
+                ev[t] = (ev[t] + [[today, sorted(ew)]])[-20:]
+            head = (f"🎯 <b>${t}</b> takeover-type news" if hit else f"📰 <b>${t}</b> major news")
+            when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""
+            self.send(f"{head}\n{html.escape(h['title'])}\n<i>{html.escape(h['source'] or 'news')}</i>{when}\n"
+                      f'<a href="{html.escape(h["link"])}">Open</a>', True)   # headlines: quiet (owner 2026-11-12)
+            # first line = what "🔎 Possibly related" shows later: the headline itself, not "major news"
+            extras.remember(t, f"{'🎯' if hit else '📰'} ${t} {h['title']}", h["link"])
+            try:
+                import scoreboard
+                scoreboard.note("bo_takeover" if hit else "bo_major", t, "up")
+            except Exception:
+                pass
+            posted = True
+        return posted
+
+    # -------- ⚡ every minute: Alpaca (real-time, works when Google is blocked)
+    def _fast(self, bo):
+        alp = alpaca_heads(48)
+        if not alp:
+            return False
+        changed = False
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        for h in alp:                       # takeover headlines for the daily discovery
+            if takeoverish(h["title"]):
+                self.rumours[h["title"]] = h
+        for k in [k for k, h in self.rumours.items() if h["date"] and h["date"] < now - timedelta(hours=RUMOUR_KEEP_H)]:
+            del self.rumours[k]
+        while len(self.rumours) > RUMOUR_MAX:
+            del self.rumours[next(iter(self.rumours))]
+        if not bo.get("alp_init"):          # first run: what Alpaca already had is old news for 📣
+            sig = bo.setdefault("sigseen", {})
+            for h in alp:
+                if takeoverish(h["title"]):
+                    sig[_hash("sig:" + h["title"].lower())] = today
+            bo["alp_init"] = True
+            changed = True
+        cands = bo.get("cands", {})
+        seen = bo.setdefault("seen", {})
+        init = bo.setdefault("init", [])
+
+        def new(key, src):
+            nonlocal changed
+            hh = _hash(key)
+            if hh in seen:
+                return False
+            seen[hh] = today
+            changed = True
+            return src in init  # first look at a candidate: remember the backlog silently
+
+        for t, c in list(cands.items()):
+            heads = [h for h in alp if t in h["symbols"]]
+            if heads:
+                changed |= self._post_heads(bo, t, c.get("name", t), heads, new, kind="alp")
+            if f"alp:{t}" not in init:
+                init.append(f"alp:{t}")
+                changed = True
+        return changed
+
+    def _start_signals(self, bo, google_too):
+        seen = set(bo.get("sigseen", {}))
+
+        def run():
+            try:
+                self.sig_result = self._signals_job(seen, google_too)
+            except Exception as e:
+                log.warning("Sale signals job failed: %s", type(e).__name__)
+                self.sig_result = None
+        self.sig_thread = threading.Thread(target=run, daemon=True)
+        self.sig_thread.start()
+
     # -------- live checks for candidates
     def _live(self, bo):
         cands = bo.get("cands", {})
@@ -1064,35 +1190,7 @@ class BuyoutWatch:
                     heads += google(q)
                 except Exception:
                     pass
-            for h in heads:
-                if (h["date"] and h["date"] < cut) or JUNK.search(h["title"]) or not mentions(h["title"] + " " + h["desc"], t, name):
-                    continue
-                hit = bo_hit(h["title"])
-                if hit and QUESTION.search(h["title"]):
-                    hit = None   # "Why Didn't Tilray Make a Bid for …?" is opinion, not takeover news (2026-11-17)
-                if not hit and (not major(h["title"], t, name) or INSIDER_TRADE.search(h["title"])):
-                    continue
-                if not new("n:" + news_key(h["title"]), "news:" + t):
-                    continue
-                ev = bo.setdefault("ev", {})
-                ew = event_words(h["title"], t, name)
-                cut_ev = (datetime.now(timezone.utc) - timedelta(days=EVENT_DAYS)).strftime("%Y-%m-%d")
-                ev[t] = [e for e in ev.get(t, []) if e[0] >= cut_ev]
-                if not hit and any(same_event(ew, e[1]) for e in ev[t]):
-                    continue   # same story as a 📰 already posted (another site's headline)
-                if ew:
-                    ev[t] = (ev[t] + [[today, sorted(ew)]])[-20:]
-                head = (f"🎯 <b>${t}</b> takeover-type news" if hit else f"📰 <b>${t}</b> major news")
-                when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""
-                self.send(f"{head}\n{html.escape(h['title'])}\n<i>{html.escape(h['source'] or 'news')}</i>{when}\n"
-                          f'<a href="{html.escape(h["link"])}">Open</a>', True)   # headlines: quiet (owner 2026-11-12)
-                # first line = what "🔎 Possibly related" shows later: the headline itself, not "major news"
-                extras.remember(t, f"{'🎯' if hit else '📰'} ${t} {h['title']}", h["link"])
-                try:
-                    import scoreboard
-                    scoreboard.note("bo_takeover" if hit else "bo_major", t, "up")
-                except Exception:
-                    pass
+            changed |= self._post_heads(bo, t, name, heads, new)
             if SEC_CONTACT:
                 try:
                     for it in self._sec(t):
@@ -1208,16 +1306,20 @@ class BuyoutWatch:
                         log.warning("Sale signals report failed: %s", type(e).__name__)
             if not self.sig_thread and time.monotonic() - self.last_sig >= SIGNAL_SECONDS:
                 self.last_sig = time.monotonic()
-                seen = set(bo.get("sigseen", {}))
-
-                def run():
-                    try:
-                        self.sig_result = self._signals_job(seen)
-                    except Exception as e:
-                        log.warning("Sale signals job failed: %s", type(e).__name__)
-                        self.sig_result = None
-                self.sig_thread = threading.Thread(target=run, daemon=True)
-                self.sig_thread.start()
+                self._start_signals(bo, google_too=True)
+            elif (not self.sig_thread and bo.get("sig_init") and bo.get("alp_init")
+                  and time.monotonic() - self.last_fast_sig >= FAST_SIG_GAP):
+                seen = bo.get("sigseen", {})
+                if any(takeoverish(h["title"]) and _hash("sig:" + h["title"].lower()) not in seen
+                       for h in alpaca_heads(SIGNAL_MAX_AGE_H)):
+                    self.last_fast_sig = time.monotonic()
+                    self._start_signals(bo, google_too=False)   # ⚡ new takeover headline: check it now
+        if time.monotonic() - self.last_fast >= FAST_SECONDS:
+            self.last_fast = time.monotonic()
+            try:
+                changed |= self._fast(bo)
+            except Exception as e:
+                log.warning("Buyout fast check failed: %s", type(e).__name__)
         if bo.get("cands") and time.time() - self.last_live >= LIVE_SECONDS:
             self.last_live = time.time()
             try:

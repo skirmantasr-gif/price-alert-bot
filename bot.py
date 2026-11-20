@@ -69,6 +69,10 @@ try:
 except ImportError:  # phone copy without options.py
     options = None
 try:
+    import catalysts
+except ImportError:  # phone copy without catalysts.py
+    catalysts = None
+try:
     import context
 except ImportError:  # phone copy without context.py
     context = None
@@ -722,6 +726,11 @@ def main():
                  if options and HEARTBEAT_ROLE != "phone" and options.UnusualWatch.enabled() else None)
     opt_hist = (options.HistoryWatch(TICKERS)
                 if options and HEARTBEAT_ROLE != "phone" and options.HistoryWatch.enabled() else None)
+    fda_cal = (catalysts.FdaCalendar(send_telegram, TICKERS)
+               if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.FdaCalendar.enabled() else None)
+    ev_res = (catalysts.ResultWatch(send_telegram, lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID),
+                                    TICKERS, pattern=earn_watch.pattern if earn_watch else None)
+              if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.ResultWatch.enabled() else None)
     wk_review = (weekly.WeeklyReview(send_telegram, practice)
                  if weekly and HEARTBEAT_ROLE != "phone" and weekly.WeeklyReview.enabled() else None)
     board = None
@@ -756,6 +765,10 @@ def main():
             checks.append(("Options activity", lambda st: opt_watch.check(st, options.market_open_ny())))
         if opt_hist:
             checks.append(("Options history", opt_hist.check))
+        if fda_cal:
+            checks.append(("FDA calendar", fda_cal.check))
+        if ev_res:
+            checks.append(("Event results", ev_res.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if board:
