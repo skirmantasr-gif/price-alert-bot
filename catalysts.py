@@ -332,7 +332,7 @@ class FdaCalendar:
 # Owner 2026-11-20 ("5. do"): SVRA's Nov 22 date stayed in the calendar after the FDA said it would not meet it.
 MISSED_RE = re.compile(r"will not (be able to )?(meet|take action|act)|unable to (meet|complete|take action)|"
                        r"not (be able to )?(meet|complete) (its|the) (review|PDUFA|goal|target)|"
-                       r"miss(es|ed|ing)? (its |the )?(PDUFA|goal date|target action|action date|deadline)|"
+                       r"\bmiss(es|ed|ing)?\b[\w\s'’-]{0,40}?\b(PDUFA|goal date|target action|action date|deadline)|"
                        r"(PDUFA|goal|action) date (is|was) missed", re.I)
 MISSED_WINDOW = (-14, 45)    # events from 14 days ago to 45 days ahead can be the one meant
 
