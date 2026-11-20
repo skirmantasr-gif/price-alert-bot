@@ -230,16 +230,36 @@ class Fixes1120b(unittest.TestCase):
             cal.check(st)
         self.assertEqual(sorted(st["_fdacal"]["ev"]), ["EXEL:2027-03-03"])
 
-    def test_quarterly_report_needs_own_sentence(self):
-        found = [("2026-11-30", "s", False, "povetacicept in IgAN, with a PDUFA date of November 30, 2026."),
-                 ("2027-01-21", "s", False, "We were assigned a PDUFA date of January 21, 2027.")]
-        hits = {"j": {"display_names": ["Jade Biosciences, Inc.  (JBIO)  (CIK 1)"], "ciks": ["1"], "form": "10-Q",
-                      "file_date": "2026-11-13"}}
-        with mock.patch.object(c, "_sec", side_effect=[__import__("json").dumps({"hits": {"hits": [
-                {"_id": "0001-26-1:j.htm", "_source": hits["j"]}]}}).encode(), b"x"] + [b'{"hits":{"hits":[]}}'] * 9), \
-                mock.patch.object(c, "find_dates", lambda text, today: found), mock.patch.object(c.time, "sleep"):
+    def run_job(self, docs):
+        """docs: [(ticker line, form, [(iso, snip, ext, sentence, wide)])] -> found per ticker."""
+        hits = [{"_id": f"0001-26-{i}:d{i}.htm", "_source": {"display_names": [dn], "ciks": [str(i + 1)], "form": form,
+                                                           "file_date": "2026-11-13"}} for i, (dn, form, _) in enumerate(docs)]
+        pages = [__import__("json").dumps({"hits": {"hits": hits}}).encode()] + [b'{"hits":{"hits":[]}}']
+        texts = iter([f for _, _, f in docs])
+        with mock.patch.object(c, "_sec", side_effect=lambda url: pages.pop(0) if "efts" in url else b"x"), \
+                mock.patch.object(c, "find_dates", lambda text, today: next(texts)), mock.patch.object(c.time, "sleep"):
             out = c.FdaCalendar(lambda *a: True)._job(set(), 4)
-        self.assertEqual([x[0] for x in out[0][3]], ["2027-01-21"])
+        return {t: [x[0] for x in found] for t, n, f, found, k in out}
+
+    def test_rival_drug_in_quarterly_report_dropped(self):
+        got = self.run_job([
+            ("VERTEX PHARMACEUTICALS INC  (VRTX)  (CIK 1)", "8-K",
+             [("2026-11-30", "s", False, "povetacicept is under priority review, PDUFA date of November 30, 2026.", "w")]),
+            ("Jade Biosciences, Inc.  (JBIO)  (CIK 2)", "10-Q",
+             [("2026-11-30", "s", False, "povetacicept in IgAN, with a PDUFA date of November 30, 2026.", "w"),
+              ("2027-01-21", "s", False, "We were assigned a PDUFA date of January 21, 2027.", "w")])])
+        self.assertEqual(got, {"VRTX": ["2026-11-30"], "JBIO": ["2027-01-21"]})
+
+    def test_own_drug_without_we_kept_when_nobody_else_claims_it(self):   # Vanda's 10-Q (Quimilza, Dec 12)
+        got = self.run_job([
+            ("Vanda Pharmaceuticals Inc.  (VNDA)  (CIK 1)", "10-Q",
+             [("2026-12-12", "s", False, "The BLA for Quimilza is under review with a PDUFA date of December 12, 2026.",
+               "The BLA for Quimilza is under review")]),
+            ("ANAPTYSBIO, INC  (ANAB)  (CIK 2)", "8-K",
+             [("2026-12-12", "s", False, "FDA target action date (PDUFA) of December 12, 2026, for Quimilza",
+               "Vanda Quimilza (imsidolimab) Financial Collaboration • FDA target action date")])])
+        self.assertEqual(got, {"VNDA": ["2026-12-12"], "ANAB": []})
+
 
 
 if __name__ == "__main__":
