@@ -86,7 +86,7 @@ class Calendar(unittest.TestCase):
             d.today.return_value = TODAY
             self.assertTrue(cal.check(st))
             self.assertIn("CAPR:2026-11-22", st["_fdacal"]["ev"])
-            self.assertEqual(st["_fdacal"]["docs"], ["a:1", "b:2"])
+            self.assertEqual(sorted(st["_fdacal"]["docs"]), ["a:1", "b:2"])
             lists = [x for x in sent if x.startswith("💊")]
             self.assertEqual(len(lists), 1)                  # first list right after the first scan
             self.assertIn("$CAPR", lists[0])
@@ -170,7 +170,8 @@ class ClosedDay(unittest.TestCase):
                          ["BZUN", "2026-11-22", "earnings", "earnings"]],
                 "_fdacal": {"ev": {"SVRA:2026-11-22": {"t": "SVRA", "date": "2026-11-22"},
                                    "VRTX:2026-11-30": {"t": "VRTX", "date": "2026-11-30"},
-                                   "X:2026-11-26": {"t": "X", "date": "2026-11-26"}}, "docs": [], "scanned": "x"}}
+                                   "X:2026-11-26": {"t": "X", "date": "2026-11-26"}}, "docs": [], "scanned": "x",
+                             "v": c.CAL_V}}
 
     def test_events_today(self):
         self.assertEqual(c.closed_day_events(self.state(), date(2026, 11, 20)),
@@ -202,6 +203,43 @@ class ClosedDay(unittest.TestCase):
 
     def test_not_before_nine(self):
         self.assertEqual(self.run_check(datetime(2026, 11, 20, 8, 30)), [])
+
+
+class Fixes1120b(unittest.TestCase):
+    def test_updated_counts_as_extension(self):
+        f = c.find_dates("The updated PDUFA target action date is March 3, 2027.", TODAY)
+        self.assertTrue(f[0][2])
+
+    def test_rebuild_on_new_rules(self):
+        cal = c.FdaCalendar(lambda *a: True)
+        cal.last = c.time.monotonic()
+        st = {"_fdacal": {"ev": {"X:2027-01-01": {"t": "X", "date": "2027-01-01"}}, "docs": ["a:1"], "warned": ["W"]}}
+        with mock.patch.object(c.extras, "local_now", lambda: datetime(2026, 11, 21, 12, 0)):
+            cal.check(st)
+        f = st["_fdacal"]
+        self.assertEqual((f["ev"], f["docs"], f["v"], f["warned"]), ({}, [], c.CAL_V, ["W"]))
+
+    def test_oldest_filing_first(self):
+        cal = c.FdaCalendar(lambda *a: True)
+        cal.last = c.time.monotonic()
+        cal.thread = mock.Mock(is_alive=lambda: False)
+        cal.result = [("EXEL", "Exelixis", "2026-10-29", [("2027-03-03", "updated", True)], "b:2"),
+                      ("EXEL", "Exelixis", "2026-08-01", [("2026-12-03", "old", False)], "a:1")]
+        st = {"_fdacal": {"ev": {}, "docs": [], "v": c.CAL_V, "list_week": "x", "listed_once": True}}
+        with mock.patch.object(c.extras, "local_now", lambda: datetime(2026, 11, 21, 12, 0)):
+            cal.check(st)
+        self.assertEqual(sorted(st["_fdacal"]["ev"]), ["EXEL:2027-03-03"])
+
+    def test_quarterly_report_needs_own_sentence(self):
+        found = [("2026-11-30", "s", False, "povetacicept in IgAN, with a PDUFA date of November 30, 2026."),
+                 ("2027-01-21", "s", False, "We were assigned a PDUFA date of January 21, 2027.")]
+        hits = {"j": {"display_names": ["Jade Biosciences, Inc.  (JBIO)  (CIK 1)"], "ciks": ["1"], "form": "10-Q",
+                      "file_date": "2026-11-13"}}
+        with mock.patch.object(c, "_sec", side_effect=[__import__("json").dumps({"hits": {"hits": [
+                {"_id": "0001-26-1:j.htm", "_source": hits["j"]}]}}).encode(), b"x"] + [b'{"hits":{"hits":[]}}'] * 9), \
+                mock.patch.object(c, "find_dates", lambda text, today: found), mock.patch.object(c.time, "sleep"):
+            out = c.FdaCalendar(lambda *a: True)._job(set(), 4)
+        self.assertEqual([x[0] for x in out[0][3]], ["2027-01-21"])
 
 
 if __name__ == "__main__":
