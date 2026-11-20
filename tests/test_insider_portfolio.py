@@ -4,7 +4,7 @@ import unittest
 import paper
 from tests.helpers import data_of, flat, ny, session
 
-TUE, WED = (2026, 11, 3), (2026, 11, 4)
+TUE, WED, THU = (2026, 11, 3), (2026, 11, 4), (2026, 11, 5)
 
 
 def sig(tk="AAA", src="insider", c="low", d="up", p0=10.0):
@@ -60,12 +60,16 @@ class InsiderPortfolio(unittest.TestCase):
         data = data_of({"AAA": session(TUE, path)})
         paper.step(st, ny(*TUE, 16, 30), data)
         self.assertIn("AAA", st["pf"]["insider"]["open"])
-        # -16% -> stop -15%
+        # since 2026-11-20 (backtest): no stop and no target - a -16% drop and then +40% are both held
         path2 = [(8.4, 8.4)] * 78
         data = data_of({"AAA": session(TUE, path) + session(WED, path2)})
         paper.step(st, ny(*WED, 16, 30), data)
-        self.assertNotIn("AAA", st["pf"]["insider"]["open"])
-        self.assertIn("stop −15%", st["pf"]["insider"]["closed"][-1]["why"])
+        self.assertIn("AAA", st["pf"]["insider"]["open"])
+        path3 = [(14.0, 14.0)] * 78
+        data = data_of({"AAA": session(TUE, path) + session(WED, path2) + session(THU, path3)})
+        paper.step(st, ny(*THU, 16, 30), data)
+        self.assertIn("AAA", st["pf"]["insider"]["open"])
+        self.assertEqual(paper.exits("likely")["stop"], paper.STOP)   # the other portfolios keep their stop
 
     def test_sold_after_90_days(self):
         st = paper.new_state(ny(*TUE, 6))
@@ -85,8 +89,8 @@ class InsiderPortfolio(unittest.TestCase):
         pf["open"]["AAA"] = {"p0": 10.0, "eur": 10.0, "cost": 10.0, "t": ny(*TUE, 10), "day": "x",
                              "src": "insider", "c": "low"}
         txt = paper.account(st, "insider", ny(*TUE, 12), data_of({"AAA": flat(TUE, 10.0)}))
-        self.assertIn("stop ≤8.5", txt)
-        self.assertIn("target ≥13", txt)
+        self.assertNotIn("stop ≤", txt)
+        self.assertNotIn("target ≥", txt)
         self.assertIn("time limit", txt)
         self.assertNotIn("profit lock", txt)
 
