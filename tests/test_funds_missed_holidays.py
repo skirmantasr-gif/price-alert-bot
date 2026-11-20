@@ -94,6 +94,17 @@ class Missed(unittest.TestCase):
         self.assertIn("MISS", svra)
         self.assertIn("will not meet", txt)
 
+    def test_real_svra_headlines(self):
+        for h in ("Savara shares fall 20% as FDA says it will miss Molgramostim review deadline",
+                  "Savara drops after FDA says it will not meet molgramostim BLA action date",
+                  "Savara Shares Fall 18% After Company Says FDA Will Miss Molgramostim Action Date"):
+            st = self.state()
+            self.assertTrue(catalysts.mark_missed(st, "SVRA", h, date(2026, 11, 19)), h)
+        for h in ("SVRA Stock Hits 52-Week Low After FDA Delays Decision On Lung Disease Drug Application",
+                  "Savara misses revenue estimates; FDA decision due Sunday",
+                  "Why is Savara stock plunging today?"):
+            self.assertFalse(catalysts.mark_missed(self.state(), "SVRA", h, date(2026, 11, 19)), h)
+
     def test_other_wording_and_window(self):
         st = self.state()
         self.assertTrue(catalysts.mark_missed(st, "CAPR", "Capricor: FDA missed its PDUFA goal date", date(2026, 11, 24)))
