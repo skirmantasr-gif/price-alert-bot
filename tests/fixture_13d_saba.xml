@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?><edgarSubmission xmlns="http://www.sec.gov/edgar/schedule13D" xmlns:com="http://www.sec.gov/edgar/common">
+
+	<schemaVersion>X0202</schemaVersion>
+<headerData>
+		<submissionType>SCHEDULE 13D</submissionType>
+		<filerInfo>
+			<filer>
+				<filerCredentials>
+					<cik>0001510281</cik>
+					<ccc>XXXXXXXX</ccc>
+				</filerCredentials>
+			</filer>
+			<liveTestFlag>LIVE</liveTestFlag>
+
+
+
+		</filerInfo>
+	</headerData>
+	<formData>
+		<coverPageHeader>
+			<securitiesClassTitle>Common Shares, $0.00001 par value</securitiesClassTitle>
+			<dateOfEvent>11/18/2026</dateOfEvent>
+			<previouslyFiledFlag>false</previouslyFiledFlag>
+			<issuerInfo>
+				<issuerCIK>0001843974</issuerCIK>
+					<issuerCusips>
+						<issuerCusipNumber>25063F107</issuerCusipNumber>
+					</issuerCusips>
+				<issuerName>Destiny Tech100 Inc.</issuerName>
+				<address>
+					<com:street1>1401 Lavaca Street, #144</com:street1>
+					<com:city>Austin</com:city>
+					<com:stateOrCountry>TX</com:stateOrCountry>
+					<com:zipCode>78701</com:zipCode>
+				</address>
+			</issuerInfo>
+			<authorizedPersons>
+				<notificationInfo>
+					<personName>Saba Capital Management, L.P.</personName>
+					<personPhoneNum>(212) 542-4635</personPhoneNum>
+					<personAddress>
+						<com:street1>405 Lexington Avenue, 58th Floor</com:street1>
+							<com:street2>Attention: Michael D'Angelo</com:street2>
+						<com:city>New York</com:city>
+						<com:stateOrCountry>NY</com:stateOrCountry>
+						<com:zipCode>10174</com:zipCode>
+					</personAddress>
+				</notificationInfo>
+			</authorizedPersons>
+		</coverPageHeader>
+		<reportingPersons>
+			<reportingPersonInfo>
+				<reportingPersonCIK>0001510281</reportingPersonCIK>
+				<reportingPersonNoCIK>N</reportingPersonNoCIK>
+				<reportingPersonName>Saba Capital Management, L.P.</reportingPersonName>
+				<fundType>OO</fundType>
+				<legalProceedings>N</legalProceedings>
+				<citizenshipOrOrganization>DE</citizenshipOrOrganization>
+				<soleVotingPower>0</soleVotingPower>
+				<sharedVotingPower>3611594</sharedVotingPower>
+				<soleDispositivePower>0</soleDispositivePower>
+				<sharedDispositivePower>3611594</sharedDispositivePower>
+				<aggregateAmountOwned>3611594</aggregateAmountOwned>
+				<isAggregateExcludeShares>N</isAggregateExcludeShares>
+				<percentOfClass>7.58</percentOfClass>
+				<typeOfReportingPerson>PN</typeOfReportingPerson>
+				<typeOfReportingPerson>IA</typeOfReportingPerson>
+			<commentContent>The percentages used herein are calculated based upon 47,657,338 shares of common stock outstanding as of 10/9/26, as disclosed in the company's DEF 14A filed 10/23/26.</commentContent>
+			</reportingPersonInfo>
+			<reportingPersonInfo>
+				<reportingPersonCIK>0001608233</reportingPersonCIK>
+				<reportingPersonNoCIK>N</reportingPersonNoCIK>
+				<reportingPersonName>Boaz R. Weinstein</reportingPersonName>
+				<fundType>OO</fundType>
+				<legalProceedings>N</legalProceedings>
+				<citizenshipOrOrganization>NY</citizenshipOrOrganization>
+				<soleVotingPower>0</soleVotingPower>
+				<sharedVotingPower>3611594</sharedVotingPower>
+				<soleDispositivePower>0</soleDispositivePower>
+				<sharedDispositivePower>3611594</sharedDispositivePower>
+				<aggregateAmountOwned>3611594</aggregateAmountOwned>
+				<isAggregateExcludeShares>N</isAggregateExcludeShares>
+				<percentOfClass>7.58</percentOfClass>
+				<typeOfReportingPerson>OO</typeOfReportingPerson>
+			<commentContent>The percentages used herein are calculated based upon 47,657,338 shares of common stock outstanding as of 10/9/26, as disclosed in the company's DEF 14A filed 10/23/26.</commentContent>
+			</reportingPersonInfo>
+			<reportingPersonInfo>
+				<reportingPersonNoCIK>Y</reportingPersonNoCIK>
+				<reportingPersonName>Saba Capital Management GP, LLC</reportingPersonName>
+				<fundType>OO</fundType>
+				<legalProceedings>N</legalProceedings>
+				<citizenshipOrOrganization>DE</citizenshipOrOrganization>
+				<soleVotingPower>0</soleVotingPower>
+				<sharedVotingPower>3611594</sharedVotingPower>
+				<soleDispositivePower>0</soleDispositivePower>
+				<sharedDispositivePower>3611594</sharedDispositivePower>
+				<aggregateAmountOwned>3611594</aggregateAmountOwned>
+				<isAggregateExcludeShares>N</isAggregateExcludeShares>
+				<percentOfClass>7.58</percentOfClass>
+				<typeOfReportingPerson>OO</typeOfReportingPerson>
+			<commentContent>The percentages used herein are calculated based upon 47,657,338 shares of common stock outstanding as of 10/9/26, as disclosed in the company's DEF 14A filed 10/23/26.</commentContent>
+			</reportingPersonInfo>
+		</reportingPersons>
+		<items1To7>
+			<item1>
+				<securityTitle>Common Shares, $0.00001 par value</securityTitle>
+				<issuerName>Destiny Tech100 Inc.</issuerName>
+				<issuerPrincipalAddress>
+					<com:street1>1401 Lavaca Street, #144</com:street1>
+					<com:city>Austin</com:city>
+					<com:stateOrCountry>TX</com:stateOrCountry>
+					<com:zipCode>78701</com:zipCode>
+				</issuerPrincipalAddress>
+			</item1>
+			<item2>
+				<filingPersonName>This Schedule 13D is being jointly filed by:
+
+(i)	Saba Capital Management, L.P., a Delaware limited partnership ("Saba Capital");
+
+(ii)	Saba Capital Management GP, LLC, a Delaware limited liability company ("Saba GP"); and
+
+(iii)	Mr. Boaz R. Weinstein ("Mr. Weinstein"),
+
+(together, the "Reporting Persons").  Any disclosures herein with respect to persons other than the Reporting Persons are made on information and belief after making inquiry to the appropriate party.
+
+
+
+The filing of this statement should not be construed as an admission that any Reporting Person is, for the purposes of Sections 13 of the Securities Exchange Act of 1934, the beneficial owner of the Common Shares reported herein.</filingPersonName>
+				<principalBusinessAddress>The address of the business office of each of the Reporting Persons is 405 Lexington Avenue, 58th Floor, New York, New York 10174.</principalBusinessAddress>
+				<principalJob>The principal business of: (i) Saba Capital is to serve as investment manager to private and public investment funds and/or accounts, (ii) Saba GP is to serve as general partner of the Saba Capital and other affiliated entities, and (iii) Mr. Weinstein, an individual, is managing member of the general partner of Saba Capital and other affiliated entities.</principalJob>
+				<hasBeenConvicted>The Reporting Persons have not, during the last five years, been convicted in a criminal proceeding (excluding traffic violations or similar misdemeanors).</hasBeenConvicted>
+				<convictionDescription>The Reporting Persons have not, during the last five years, been a party to a civil proceeding of a judicial or administrative body of competent jurisdiction and, as a result of such proceeding, was, or is subject to, a judgment, decree or final order enjoining future violations of, or prohibiting or mandating activities subject to, Federal or State securities laws or finding any violation with respect to such laws.</convictionDescription>
+				<citizenship>Saba Capital is organized as a limited partnership under the laws of the State of Delaware. Saba GP is organized as a limited liability company under the laws of the State of Delaware. Mr. Weinstein is a citizen of the United States.</citizenship>
+			</item2>
+			<item3>
+				<fundsSource>Funds for the purchase of the Common Shares were derived from the subscription proceeds from investors and the capital appreciation thereon and margin account borrowings made in the ordinary course of business.  In such instances, the positions held in the margin accounts are pledged as collateral security for the repayment of debit balances in the account, which may exist from time to time.  Since other securities are held in the margin accounts, it is not possible to determine the amounts, if any, of margin used to purchase the Common Shares reported herein. A total of approximately $96,227,048 was paid to acquire the Common Shares reported herein.</fundsSource>
+			</item3>
+			<item4>
+				<transactionPurpose>The Reporting Persons acquired the Common Shares to which this Schedule 13D relates in the ordinary course of business for investment purposes because they believe that the Common Shares are undervalued and represent an attractive investment opportunity. The Reporting Persons may engage in discussions with management, the Board of Directors (the "Board"), other shareholders of the Issuer and other relevant parties, including representatives of any of the foregoing, concerning the Reporting Persons' investment in the Common Shares and the Issuer, including, without limitation, matters concerning the Issuer's business, operations, board appointments, governance, performance, management, capitalization, trading of the Common Shares at a discount to the Issuer's net asset value and strategic plans and matters relating to the open or closed end nature of the Issuer and timing of any potential liquidation of the Issuer. The Reporting Persons may exchange information with any persons pursuant to appropriate confidentiality or similar agreements or otherwise, work together with any persons pursuant to joint agreements or otherwise, propose changes in the Issuer's business, operations, board appointments, governance, management, capitalization, strategic plans or matters relating to the open or closed end nature of the Issuer or timing of any potential liquidation of the Issuer, or propose or engage in one or more other actions set forth herein. The Reporting Persons may also propose or take one or more of the actions described in subsections (a) through (j) of Item 4 of Schedule 13D, including the solicitation of proxies, and may discuss such actions with the Issuer and Issuer's management and the Board, other stockholders of the Issuer and other interested parties. The Reporting Persons may make binding or non-binding shareholder proposals, or may nominate one or more individuals as nominees for election to the Board in connection with their investment in the Common Shares of the Issuer. The Reporting Persons intend to review their investment in the Issuer on a continuing basis. Depending on various factors, including, without limitation, the outcome of any discussions referenced above, the Issuer's financial position and strategic direction, actions taken by management or the Board, price levels of the Common Shares, other investment opportunities available to the Reporting Persons, conditions in the securities market and general economic and industry conditions, the Reporting Persons may in the future take such actions with respect to their investment in the Issuer as they deem appropriate, including, without limitation, purchasing additional Common Shares or selling some or all of their Common Shares, establishing, maintaining, increasing or decreasing any short position or hedging or similar position they may have now or in the future with respect to the Common Shares, and/or otherwise changing their intention with respect to any and all matters referred to in Item 4 of Schedule 13D. Furthermore, the Reporting Person may seek to influence the Issuer to engage in share buy-backs, tenders, and liquidations and/or to change its governance, investment strategy and/or investment manager (which may be the Reporting Person). The Reporting Persons may, at any time and from time to time, review or reconsider their position and/or change their purpose and/or formulate plans or additional proposals with respect to their investment in the Common Shares. The Reporting Persons have not entered into any agreement with any third party to act together for the purpose of acquiring, holding, voting or disposing of the Common Shares reported herein.</transactionPurpose>
+			</item4>
+			<item5>
+				<percentageOfClassSecurities>See the Reporting Persons section of this Schedule 13D for the aggregate number of Common Shares and percentages of the Common Shares beneficially owned by each of the Reporting Persons.  The percentages used herein are calculated based upon 47,657,338 shares of common stock outstanding as of 10/9/26, as disclosed in the company's DEF 14A filed 10/23/26.</percentageOfClassSecurities>
+				<numberOfShares>See the Reporting Persons section of this Schedule 13D for the number of Common Shares as to which each Reporting Person has the sole or shared power to vote or direct the vote and sole or shared power to dispose or to direct the disposition.</numberOfShares>
+				<transactionDesc>The transactions in the Common Shares effected by the Reporting Persons within the past sixty days prior to the the filing date of this Schedule 13D, which were all in the open market, are set forth in Schedule A, and are incorporated herein by reference.</transactionDesc>
+				<listOfShareholders>The funds and accounts advised by Saba Capital have the right to receive the dividends and proceeds of sales from the Common Shares.</listOfShareholders>
+				<date5PercentOwnership>Not Applicable.</date5PercentOwnership>
+			</item5>
+			<item6>
+				<contractDescription>Other than the Joint Filing Agreement attached as Exhibit 1 hereto, there are no contracts, arrangements, understandings or relationships (legal or otherwise) among the persons named in Item 2 hereof and between such persons and any person with respect to any securities of the Issuer, including but not limited to transfer or voting of any other securities, finder's fees, joint ventures, loan or option arrangements, puts or calls, guarantees of profits, divisions of profits or loss, or the giving or withholding of proxies.</contractDescription>
+			</item6>
+			<item7>
+				<filedExhibits>Exhibit 1 - Joint Filing Agreement
+Exhibit 2 - Schedule A</filedExhibits>
+			</item7>
+		</items1To7>
+		<signatureInfo>
+			<signaturePerson>
+				<signatureReportingPerson>Saba Capital Management, L.P.</signatureReportingPerson>
+				<signatureDetails>
+					<signature>/s/ David Han</signature>
+					<title>Chief Compliance Officer</title>
+					<date>11/20/2026</date>
+				</signatureDetails>
+			</signaturePerson>
+			<signaturePerson>
+				<signatureReportingPerson>Boaz R. Weinstein</signatureReportingPerson>
+				<signatureDetails>
+					<signature>/s/ David Han</signature>
+					<title>Attorney-in-fact*</title>
+					<date>11/20/2026</date>
+				</signatureDetails>
+			</signaturePerson>
+			<signaturePerson>
+				<signatureReportingPerson>Saba Capital Management GP, LLC</signatureReportingPerson>
+				<signatureDetails>
+					<signature>/s/ Michael D'Angelo</signature>
+					<title>Authorized Signatory</title>
+					<date>11/20/2026</date>
+				</signatureDetails>
+			</signaturePerson>
+			<commentText>Pursuant to a power of attorney dated as of November 17, 2026, which is incorporated herein by reference to Exhibit 5 to the Schedule 13D/A filed by the Reporting Persons on November 17, 2026, accession number: 0001062993-26-006164</commentText>
+		</signatureInfo>
+	</formData>
+
+</edgarSubmission>
