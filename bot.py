@@ -82,6 +82,10 @@ try:
 except ImportError:  # phone copy without activist.py
     activist = None
 try:
+    import chatnotes
+except ImportError:  # phone copy without chatnotes.py
+    chatnotes = None
+try:
     import netcash
 except ImportError:  # phone copy without netcash.py
     netcash = None
@@ -401,6 +405,90 @@ def send_chat_message(header, body, link, pics, loud=True):
     return True
 
 
+def chat_tickers(text):
+    """Real tickers named in a chat post (cashtags first), checked against live prices (shared cache)."""
+    cands = list(dict.fromkeys(extras.CASHTAG.findall(text or "") +
+                               [w for w in extras.BARE.findall(text or "") if w not in extras.STOP]))
+    out = []
+    for t in cands[:10]:
+        if _ticker_cache.get(t) is False:
+            continue
+        try:
+            fetch_price(t)
+            _ticker_cache[t] = True
+            out.append(t)
+        except Exception:
+            _ticker_cache[t] = False
+    return out
+
+
+def chat_facts(t):
+    """Facts for the 🧐 check of a chat post: price + moves, value, headlines, SEC filings, options, flags."""
+    f = {}
+    try:
+        price, prev, session = fetch_price(t)
+        f["price"], f["session"] = round(price, 4), session
+        if prev:
+            f["today_pct"] = round((price / prev - 1) * 100, 1)
+    except Exception:
+        pass
+    try:
+        import learn as _learn
+        closes = [c for _, c in _learn._closes(http_get_json, t)[0]]
+        if len(closes) >= 6:
+            f["closes_last_10_days"] = [round(c, 4) for c in closes[-10:]]
+            f["change_1_month_pct"] = round((closes[-1] / closes[max(0, len(closes) - 22)] - 1) * 100, 1)
+    except Exception:
+        pass
+    try:
+        import movers
+        cap = movers.market_cap(t)
+        if cap:
+            f["market_value_usd"] = round(cap)
+    except Exception:
+        pass
+    try:
+        import news as _news
+        f["recent_headlines"] = [{"title": h["title"][:160], "date": str(h.get("date") or "")[:16]}
+                                 for h in (_news.yahoo_news(t) or [])[:8]]
+        f["recent_sec_filings"] = [{"form": x["form"], "date": str(x.get("date") or "")[:10], "items": x.get("items"),
+                                    "desc": (x.get("desc") or "")[:80]} for x in (_news.sec_filings(t) or [])[:8]]
+    except Exception:
+        pass
+    try:   # cash and shares from the latest quarterly report (SEC XBRL), so cash claims can be checked
+        contact = os.environ.get("SEC_CONTACT", "").strip()
+        cik = news_sec_cik(t) if contact else None
+        if cik:
+            cf = json.loads(urllib.request.urlopen(urllib.request.Request(
+                f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json",
+                headers={"User-Agent": f"price-alert-bot {contact}"}), timeout=30).read(20_000_000))
+            for ns, k, unit, name in (("us-gaap", "CashAndCashEquivalentsAtCarryingValue", "USD", "cash_last_report"),
+                                      ("us-gaap", "Liabilities", "USD", "liabilities_last_report"),
+                                      ("dei", "EntityCommonStockSharesOutstanding", "shares", "shares_outstanding")):
+                v = sorted(((cf.get("facts") or {}).get(ns, {}).get(k, {}).get("units", {}).get(unit) or []),
+                           key=lambda x: x["end"])
+                if v:
+                    f[name] = {"value": v[-1]["val"], "as_of": v[-1]["end"]}
+    except Exception:
+        pass
+    try:
+        if options:
+            o = options.get(t)
+            if o:
+                f["options"] = {k: o.get(k) for k in ("exp", "days", "move_pct", "pc_ratio", "max_pain")}
+                ln = options.lean(o.get("unusual", []), price=o.get("price"))
+                if ln:
+                    f["options"]["unusual_bets_today"] = {k: ln[k] for k in ("dir", "until", "calls", "puts")}
+    except Exception:
+        pass
+    try:
+        if context:
+            f["bot_flags"] = [extras._strip(x) for x in context.lines(t, market=False, once=False)]
+    except Exception:
+        pass
+    return f
+
+
 def who(user, role):
     name = html.escape((user or {}).get("name") or "Someone")
     return f"⭐ <b>{name}</b>" if role == "admin" else f"<b>{name}</b>"
@@ -456,11 +544,15 @@ def thirdparty_check(state):
             icon = "📢" if p.get("user_pub_role") == "admin" else "💬"
             header = f"{icon} <b>{cname}</b> · {who(t.get('user'), p.get('user_pub_role'))}"
             ok = send_chat_message(header, p.get("body"), link, images(p), loud=p.get("user_pub_role") == "admin")
+            if ok and chatnotes:
+                chatnotes.offer(p["id"], p.get("body"), (t.get("user") or {}).get("name"), p.get("user_pub_role"), link)
         else:
             c = r["comment"]
             header = (f"↳ <b>{cname}</b> · {who(r.get('user'), c.get('user_pub_role'))}\n"
                       f"<i>reply to: “{html.escape(snippet(p.get('body')))}”</i>")
             ok = send_chat_message(header, c.get("body"), link, images(c), loud=c.get("user_pub_role") == "admin")
+            if ok and chatnotes:
+                chatnotes.offer(c["id"], c.get("body"), (r.get("user") or {}).get("name"), c.get("user_pub_role"), link)
         if not ok:
             log.warning("Third party: Telegram send failed, will retry next poll")
             break
@@ -776,6 +868,8 @@ def main():
     ev_res = (catalysts.ResultWatch(send_telegram, lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID),
                                     TICKERS, pattern=earn_watch.pattern if earn_watch else None)
               if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.ResultWatch.enabled() else None)
+    chat_check = (chatnotes.ChatNotes(lambda text, silent: send_telegram(text, silent), chat_tickers, chat_facts)
+                  if chatnotes and TP_COOKIE and chatnotes.ChatNotes.enabled() else None)
     act_watch = (activist.ActivistWatch(lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID), TICKERS)
                  if activist and HEARTBEAT_ROLE != "phone" and activist.ActivistWatch.enabled() else None)
     cash_screen = (netcash.NetCashScreen(lambda text, silent: send_telegram(text, silent, BUYOUT_CHAT_ID))
@@ -825,6 +919,8 @@ def main():
             checks.append(("Forecast scoring", preds.check))
         if act_watch:
             checks.append(("Activist watch", act_watch.check))
+        if chat_check:
+            checks.append(("Chat post check", chat_check.check))
         if cash_screen:
             checks.append(("Net-cash screen", cash_screen.check))
         if reviewer:
