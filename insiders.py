@@ -94,6 +94,7 @@ def parse_form4(xml):
     """{ticker, company, owner, role, officer_or_director, plan, buys: [(date, shares, price)]} from Form 4 XML."""
     root = ET.fromstring(xml)
     tk = (root.findtext("issuer/issuerTradingSymbol") or "").strip().upper()
+    tk = tk.split(":")[-1].strip()   # some filers write "NYSE:FLG" (2026-11-20 post showed $NYSE:FLG)
     roles, od = [], False
     for rel in root.findall("reportingOwner/reportingOwnerRelationship"):
         yes = lambda tag: (rel.findtext(tag) or "").strip().lower() in ("1", "true")

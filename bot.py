@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -622,11 +623,31 @@ def check(ticker, state, errors, volume=None):
     return changed
 
 
+def stop_handler(state, save=None):
+    """SIGTERM (systemd stop / restart after a code update): save what was sent this loop, then exit.
+    Owner 2026-11-20: without it the 🧪 statement, 🧭 outlook and an IBKR fill line were posted twice after
+    restarts (the state is otherwise saved only at the end of a 1-2 minute loop)."""
+    def handler(signum, frame):
+        log.info("Stop signal: saving state before exit")
+        for _ in range(5):
+            try:
+                (save or save_state)(state)
+                break
+            except RuntimeError:      # a helper thread changed the state while it was written: try again
+                time.sleep(0.05)
+            except Exception as e:
+                log.warning("Saving state on stop failed: %s", type(e).__name__)
+                break
+        raise SystemExit(0)
+    return handler
+
+
 def main():
     if not TOKEN or not CHAT_ID:
         sys.exit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.")
 
     state = load_state()
+    signal.signal(signal.SIGTERM, stop_handler(state))
     if not TP_COOKIE:
         state.pop("_thirdparty", None)  # chat forwarding runs elsewhere; keep chat ids out of the saved state
     errors = {}

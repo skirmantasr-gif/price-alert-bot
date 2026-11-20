@@ -165,6 +165,15 @@ def market_cap(sym):
     return _CAPS[sym]
 
 
+GLITCH_PCT, GLITCH_CAP = 50, 20e9
+
+
+def glitch(r, pct):
+    """A giant company 'moving' 50%+ before the open is a data error or a share split, not news
+    (2026-11-20: SanDisk shown at -88.8%, the AI itself called it a likely data error)."""
+    return abs(pct) >= GLITCH_PCT and (r.get("cap") or 0) >= GLITCH_CAP
+
+
 def cap_ok(rows, n):
     """The first n rows whose market value is >= MIN_CAP, looking up unknown values (cap=None) one by one."""
     out = []
@@ -486,7 +495,8 @@ class MoversWatch:
         syms = list(by)
         snap = quotes_all(syms)
         moved = [{**by[s], "pct": q["pre"][0] * 100, "price": q["pre"][1]} for s, q in snap.items()
-                 if s in by and q.get("pre") and q["pre"][2] >= PRE_MIN_BARS and q["pre"][1] >= MIN_PRICE]
+                 if s in by and q.get("pre") and q["pre"][2] >= PRE_MIN_BARS and q["pre"][1] >= MIN_PRICE
+                 and not glitch(by[s], q["pre"][0] * 100)]
         log.info("Movers pre-market: %d stocks checked, %d with pre-market trades", len(syms), len(moved))
         if not moved:
             return {"day": day, "up": [], "down": [], "checked": len(syms)}

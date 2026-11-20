@@ -485,6 +485,10 @@ def mentions(text, t, name):
     return all(re.search(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", text, re.I) for w in words)
 
 
+MARKET_CTX = re.compile(r"\b(stocks?|shares?|shareholders?|NYSE|NASDAQ|Nasdaq|earnings|revenue|quarter|analysts?|"
+                        r"buyout|takeover|acqui\w*|merger|merge|deal|offer|bid|investors?|dividend|guidance|CEO|board|"
+                        r"stake|price target|rating|upgrade\w*|downgrade\w*|sale|sells?|buys?|IPO|results|profit|loss)\b",
+                        re.I)
 _LEGAL = {"inc", "corp", "corporation", "ltd", "plc", "co", "company", "sa", "nv", "ag", "se", "llc", "lp"}
 
 
@@ -500,6 +504,10 @@ def in_title(title, t, name):
         nxt = re.match(r"\s+(Acquisition|Holdings?|Capital|Partners|Ventures|Group)\b", title[m.end():])
         if (nxt and not m.group(0).startswith("$")
                 and nxt.group(1).lower() not in (name or "").lower()):
+            continue
+        # a bare 3-letter ticker is often another word: "Legislature approves KMT's payout bill" is Taiwan's KMT
+        # party, not Kennametal (2026-11-20 noise) -> it counts only next to a market / deal word
+        if len(t) <= 3 and re.fullmatch(r"\s*" + re.escape(t), m.group(0)) and not MARKET_CTX.search(title):
             continue
         return True
     toks = re.findall(r"[A-Za-z][A-Za-z0-9&\-]+", name or "")   # digits too: "Velo3D" was cut to "Velo" (2026-11-20)
