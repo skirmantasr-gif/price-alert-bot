@@ -436,6 +436,10 @@ def _line(e, names):
         return f"↩️ Trade removed <b>${tk}</b> ({html.escape(e['why'])}) — money back, not counted {names}"
     if e["a"] == "cancel":
         return f"✖️ Order cancelled <b>${tk}</b> ({html.escape(e['why'])}) {names}"
+    if e["a"] == "topup":
+        return f"➕ Added €{e.get('eur', 0):.0f} play money (cash ran out before buying <b>${tk}</b>) {names}"
+    if e["a"] != "sell" or "ret" not in e:
+        return f"· {html.escape(str(e['a']))} <b>${tk}</b> {names}"
     return (f"{'✅' if e['ret'] > 0 else '❌'} Sold <b>${tk}</b> {_pct(e['ret'])} at {e['p']:,.4g}{_when(e)} "
             f"({html.escape(e['why'])}) {names}")
 
