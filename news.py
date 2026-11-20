@@ -876,6 +876,12 @@ class NewsWatcher:
                 it["insider"] = self._fetch("SEC EDGAR insider", insider_details, it)
             if it["kind"] == "sec" and "reorg" not in it and SEC_CONTACT:
                 it["reorg"] = sec_reorg(it)
+            if it["kind"] == "sec" and "ai_sum" not in it and not it.get("insider"):
+                try:
+                    import filings
+                    it["ai_sum"] = filings.summarize(it, (COMPANIES.get(it["ticker"], {}).get("match") or [it["ticker"]])[0])
+                except Exception:
+                    it["ai_sum"] = None
         try:
             impact.assign(batch, {t: (COMPANIES.get(t, {}).get("match") or [t])[0] for t in self.tickers}, self.send)
         except Exception as e:
@@ -994,7 +1000,13 @@ class NewsWatcher:
                              "1-for-1 shares) — NOT a buyout")
             if items:
                 lines.append(html.escape("; ".join(items)))
-            elif it.get("desc") and not re.fullmatch(r"(FORM\s*)?" + re.escape(form), it["desc"].strip(), re.I) \
+            if it.get("ai_sum"):
+                try:
+                    import filings
+                    lines += filings.lines(it["ai_sum"])
+                except Exception:
+                    pass
+            elif not items and it.get("desc") and not re.fullmatch(r"(FORM\s*)?" + re.escape(form), it["desc"].strip(), re.I) \
                     and not it["desc"].upper().startswith(("INITIAL STATEMENT", "STATEMENT OF CHANGES")):
                 lines.append(html.escape(it["desc"][:200]))
             lines.append(f'<a href="{html.escape(it["link"])}">Open filing</a>{self._when(it.get("date"))}')

@@ -73,6 +73,10 @@ try:
 except ImportError:  # phone copy without catalysts.py
     catalysts = None
 try:
+    import predict
+except ImportError:  # phone copy without predict.py
+    predict = None
+try:
     import context
 except ImportError:  # phone copy without context.py
     context = None
@@ -728,6 +732,8 @@ def main():
                 if options and HEARTBEAT_ROLE != "phone" and options.HistoryWatch.enabled() else None)
     fda_cal = (catalysts.FdaCalendar(send_telegram, TICKERS)
                if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.FdaCalendar.enabled() else None)
+    preds = (predict.PredictionWatch(lambda text, silent: send_telegram(text, silent, PAPER_CHAT_ID or None))
+             if predict and HEARTBEAT_ROLE != "phone" and predict.PredictionWatch.enabled() else None)
     ev_res = (catalysts.ResultWatch(send_telegram, lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID),
                                     TICKERS, pattern=earn_watch.pattern if earn_watch else None)
               if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.ResultWatch.enabled() else None)
@@ -769,6 +775,8 @@ def main():
             checks.append(("FDA calendar", fda_cal.check))
         if ev_res:
             checks.append(("Event results", ev_res.check))
+        if preds:
+            checks.append(("Forecast scoring", preds.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if board:

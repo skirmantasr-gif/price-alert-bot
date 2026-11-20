@@ -47,7 +47,9 @@ GENERIC_RE = re.compile(r"\b(failing to meet|failed to meet|miss(es|ed)? (its|th
                         r"reauthori[sz]\w*|for example|such as delays|exclusivity|ahead of (its|the) "
                         r"(PDUFA|target|goal)|approved .{0,80}ahead of)\b", re.I)
 AFTER, BEFORE = 160, 90      # a date this close after (or before) the PDUFA words belongs to them
-EXTEND_RE = re.compile(r"\bextend\w*|\bextension\b|\bnew (PDUFA|target|goal)\b|\brevised\b|\bmoved\b", re.I)
+EXTEND_RE = re.compile(r"\bextend\w*|\bextension\b|\bnew (PDUFA|target|goal)\b|\brevised\b|\bmoved\b|\bupdated\b", re.I)
+FIRST_PERSON = re.compile(r"\b(we|our|us|the company(['’]s)?)\b", re.I)
+CAL_V = 2                    # raise to rebuild _fdacal from scratch (rules changed)
 DATE_Y = re.compile(r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|"
                     r"Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(20\d\d)\b",
                     re.I)
@@ -207,7 +209,14 @@ class FdaCalendar:
                 log.info("FDA calendar: filing unavailable (%s)", type(e).__name__)
                 continue
             read += 1
-            out.append((t, name, so.get("file_date", ""), find_dates(_text(raw[:DOC_BYTES]), today), _id))
+            found = find_dates(_text(raw[:DOC_BYTES]), today)
+            if not str(so.get("form") or so.get("file_type") or "").upper().startswith(("8-K", "6-K")):
+                # quarterly / annual reports describe rivals' drugs too ("povetacicept … PDUFA date of November 30"
+                # in Akebia's and Jade's 10-Qs): only sentences about the company itself count there
+                own = first_word(name)
+                found = [x for x in found if FIRST_PERSON.search(x[3]) or (own and re.search(
+                    r"\b" + re.escape(own) + r"\b", x[3].lower()))]
+            out.append((t, name, so.get("file_date", ""), found, _id))
             time.sleep(0.25)
         names = {first_word(n) for _, n, _, _, _ in out if n} - {""}
         out = [(t, n, f, [x[:3] for x in found if not other_company(x[3], first_word(n), names)], k)
@@ -218,11 +227,16 @@ class FdaCalendar:
     def check(self, state):
         fc = state.setdefault("_fdacal", {"ev": {}, "docs": []})
         changed = False
+        if fc.get("v") != CAL_V:     # rules changed: read the filings again
+            keep = {k: fc[k] for k in ("list_week", "listed_once", "warned") if k in fc}
+            fc.clear()
+            fc.update({"ev": {}, "docs": [], "v": CAL_V, **keep})
+            changed = True
         if self.thread and not self.thread.is_alive():
             res, self.thread = self.result, None
             if res is not None:
                 before = len(fc["ev"])
-                for t, name, filed, found, key in res:
+                for t, name, filed, found, key in sorted(res, key=lambda r: r[2] or ""):   # oldest first: newer wins
                     if t and found:
                         changed |= merge(fc["ev"], t, name, filed, found)
                     fc["docs"].append(key)
