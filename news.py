@@ -876,7 +876,13 @@ class NewsWatcher:
                 it["insider"] = self._fetch("SEC EDGAR insider", insider_details, it)
             if it["kind"] == "sec" and "reorg" not in it and SEC_CONTACT:
                 it["reorg"] = sec_reorg(it)
-            if it["kind"] == "sec" and "ai_sum" not in it and not it.get("insider"):
+            if it["kind"] == "sec" and "activist" not in it:
+                try:
+                    import activist
+                    it["activist"] = activist.details(it)
+                except Exception:
+                    it["activist"] = None
+            if it["kind"] == "sec" and "ai_sum" not in it and not it.get("insider") and not it.get("activist"):
                 try:
                     import filings
                     it["ai_sum"] = filings.summarize(it, (COMPANIES.get(it["ticker"], {}).get("match") or [it["ticker"]])[0])
@@ -922,6 +928,12 @@ class NewsWatcher:
             if learn:
                 learn.record_news(state, it)
             extras.bump(state, "sec" if it["kind"] == "sec" else "news")
+            if it["kind"] == "news":
+                try:
+                    import catalysts
+                    changed |= catalysts.mark_missed(state, it["ticker"], it["title"])
+                except Exception:
+                    pass
             _recent_add(ns, it["ticker"], it["title"] if it["kind"] == "news" else extras._strip(msg.split("\n")[0]))
             changed = True
             if it.get("contract") or it["kind"] == "gov":
@@ -1000,6 +1012,12 @@ class NewsWatcher:
                              "1-for-1 shares) — NOT a buyout")
             if items:
                 lines.append(html.escape("; ".join(items)))
+            if it.get("activist"):
+                try:
+                    import activist
+                    lines += activist.lines(it["activist"], form.upper().endswith("/A"))
+                except Exception:
+                    pass
             if it.get("ai_sum"):
                 try:
                     import filings

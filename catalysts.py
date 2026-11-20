@@ -238,7 +238,7 @@ class FdaCalendar:
         fc = state.setdefault("_fdacal", {"ev": {}, "docs": []})
         changed = False
         if fc.get("v") != CAL_V:     # rules changed: read the filings again
-            keep = {k: fc[k] for k in ("list_week", "listed_once", "warned") if k in fc}
+            keep = {k: fc[k] for k in ("list_week", "listed_once", "warned", "missed") if k in fc}
             fc.clear()
             fc.update({"ev": {}, "docs": [], "v": CAL_V, **keep})
             changed = True
@@ -284,13 +284,14 @@ class FdaCalendar:
         due = fc.get("scanned") and fc.get("list_week") != week and (
             not fc.get("listed_once") or (now.weekday() == LIST_WEEKDAY and now.strftime("%H:%M") >= LIST_TIME))
         if due:
-            text = self.list_message(fc["ev"], now.date())
+            text = self.list_message(fc["ev"], now.date(), fc.get("missed"))
             if text and self.send(text, True):
                 fc["list_week"], fc["listed_once"] = week, True
                 changed = True
         return changed
 
-    def list_message(self, ev, today):
+    def list_message(self, ev, today, missed=None):
+        missed = missed or {}
         end = (today + timedelta(days=LIST_DAYS)).isoformat()
         up = sorted((e for e in ev.values() if today.isoformat() <= e["date"] <= end), key=lambda e: (e["date"], e["t"]))
         if not up:
@@ -314,23 +315,100 @@ class FdaCalendar:
                 pass
             if e["t"] in self.watch:
                 bits.append("⭐ watchlist")
+            miss = missed.get(f"{e['t']}:{e['date']}")
+            if miss:
+                bits.append("❗ FDA said it will MISS this date")
             lines.append("• " + " · ".join(bits))
-            if e.get("snip"):
+            if miss:
+                lines.append(f"  <i>{html.escape(miss['title'][:160])}</i>")
+            elif e.get("snip"):
                 lines.append(f"  <i>{html.escape(e['snip'][:160])}</i>")
         lines.append("<i>Dates as the companies wrote them in SEC filings; the FDA can act earlier or later. "
                      "📼 options are recorded daily for each, results posted after. Not advice.</i>")
         return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- ❗ the FDA says it will miss a date
+# Owner 2026-11-20 ("5. do"): SVRA's Nov 22 date stayed in the calendar after the FDA said it would not meet it.
+MISSED_RE = re.compile(r"will not (be able to )?(meet|take action|act)|unable to (meet|complete|take action)|"
+                       r"not (be able to )?(meet|complete) (its|the) (review|PDUFA|goal|target)|"
+                       r"miss(es|ed|ing)? (its |the )?(PDUFA|goal date|target action|action date|deadline)|"
+                       r"(PDUFA|goal|action) date (is|was) missed", re.I)
+MISSED_WINDOW = (-14, 45)    # events from 14 days ago to 45 days ahead can be the one meant
+
+
+def missed_keys(state):
+    return ((state.get("_fdacal") or {}).get("missed") or {})
+
+
+def mark_missed(state, t, title, today=None):
+    """A headline like 'FDA will not meet the PDUFA date' marks the stock's nearby FDA date(s) as missed."""
+    if not MISSED_RE.search(title or "") or not re.search(r"\bFDA\b|PDUFA|regulat", title or "", re.I):
+        return False
+    today = today or date.today()
+    evs = {iso for tt, iso, kind, _ in (state.get("_cal") or []) if kind == "fda" and tt == t}
+    evs |= {e["date"] for e in ((state.get("_fdacal") or {}).get("ev") or {}).values() if e["t"] == t}
+    fc = state.setdefault("_fdacal", {"ev": {}, "docs": []})
+    m = fc.setdefault("missed", {})
+    changed = False
+    for iso in evs:
+        delta = (datetime.strptime(iso, "%Y-%m-%d").date() - today).days
+        k = f"{t}:{iso}"
+        if MISSED_WINDOW[0] <= delta <= MISSED_WINDOW[1] and k not in m:
+            m[k] = {"title": title[:200], "at": today.isoformat()}
+            changed = True
+            log.info("FDA calendar: date marked missed")
+    if len(m) > 200:
+        for k in sorted(m, key=lambda k: m[k]["at"])[:len(m) - 200]:
+            del m[k]
+    return changed
+
+
 # ---------------------------------------------------------------- ⏰ decisions on closed-market days
 # Owner 2026-11-20: "if fda approval is on the weekend or non working market day i'll receive it earlier".
-# NYSE holidays (full closures); extend each year.
-NYSE_HOLIDAYS = {
-    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
-    "2026-11-26", "2026-12-25",
-    "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06",
-    "2027-11-25", "2027-12-24",
-}
+# NYSE full closures, computed by the exchange's rules (owner 2026-11-20 "5. do": no hand-typed list to extend).
+# A holiday on Saturday is observed Friday, on Sunday Monday — except New Year's Day on a Saturday (NYSE: no closure).
+
+
+def _easter(y):
+    a, b, c = y % 19, y // 100, y % 100
+    d, e = b // 4, b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l_ = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l_) // 451
+    month = (h + l_ - 7 * m + 114) // 31
+    return date(y, month, (h + l_ - 7 * m + 114) % 31 + 1)
+
+
+def _nth(y, month, weekday, n):
+    """n-th weekday (0 = Monday) of a month; n = -1 is the last one."""
+    if n > 0:
+        d = date(y, month, 1)
+        d += timedelta(days=(weekday - d.weekday()) % 7)
+        return d + timedelta(weeks=n - 1)
+    d = date(y, month + 1, 1) - timedelta(days=1) if month < 12 else date(y, 12, 31)
+    return d - timedelta(days=(d.weekday() - weekday) % 7)
+
+
+def _observed(d, new_year=False):
+    if d.weekday() == 5:
+        return None if new_year else d - timedelta(days=1)
+    return d + timedelta(days=1) if d.weekday() == 6 else d
+
+
+def nyse_holidays(y):
+    days = [_observed(date(y, 1, 1), new_year=True), _nth(y, 1, 0, 3), _nth(y, 2, 0, 3),
+            _easter(y) - timedelta(days=2), _nth(y, 5, 0, -1), _observed(date(y, 7, 4)), _nth(y, 9, 0, 1),
+            _nth(y, 11, 3, 4), _observed(date(y, 12, 25))]
+    if y >= 2022:
+        days.append(_observed(date(y, 6, 19)))
+    return {d.isoformat() for d in days if d}
+
+
+NYSE_HOLIDAYS = set().union(*(nyse_holidays(y) for y in range(2024, 2041)))
 WARN_TIME = "09:00"          # Vilnius time on the last trading day before
 
 
@@ -350,8 +428,11 @@ def closed_day_events(state, today):
     evs = {(t, iso) for t, iso, kind, _ in (state.get("_cal") or []) if kind == "fda"}
     evs |= {(e["t"], e["date"]) for e in ((state.get("_fdacal") or {}).get("ev") or {}).values()}
     out = []
+    missed = missed_keys(state)
     for t, iso in sorted(evs, key=lambda x: (x[1], x[0])):
         d = datetime.strptime(iso, "%Y-%m-%d").date()
+        if f"{t}:{iso}" in missed:
+            continue          # the FDA already said it will not decide on that day
         if not trading_day(d) and last_trading_before(d) == today:
             out.append((t, iso))
     return out
@@ -476,6 +557,8 @@ class ResultWatch:
             pre5 = bars[k - 1][2] / bars[k - 6][2] - 1
             imp, pc, exp = implied(rec, day)
             kind = rec.get("kind") or ("earnings" if "earn" in rec.get("label", "").lower() else "fda")
+            if kind == "fda" and f"{rec['t']}:{rec['event']}" in missed_keys(state):
+                kind = "fda_missed"     # no decision that day: not scored with the real decisions
             row = {"t": rec["t"], "kind": kind, "event": rec["event"], "day": day, "move": round(move, 4),
                    "imp": imp, "pc": round(pc, 2) if pc else None, "pre5": round(pre5, 4), "vr": round(vr, 1)}
             res["rows"] = (res["rows"] + [row])[-300:]
@@ -487,7 +570,8 @@ class ResultWatch:
         return changed
 
     def message(self, rec, row, before, after, exp, rows):
-        what = "earnings" if row["kind"] == "earnings" else "FDA decision"
+        what = {"earnings": "earnings", "fda_missed": "FDA date (the FDA missed it, no decision yet)"}.get(
+            row["kind"], "FDA decision")
         d = datetime.strptime(row["day"], "%Y-%m-%d").strftime("%a %b %d")
         ev = datetime.strptime(rec["event"], "%Y-%m-%d").strftime("%a %b %d")
         lines = [f"📼 <b>${html.escape(rec['t'])}</b> after its {what} ({ev}): <b>{row['move'] * 100:+.1f}%</b> on {d} "
@@ -607,6 +691,7 @@ class FdaNewsWatch:
                 changed = True
                 if first:
                     continue
+                changed |= mark_missed(state, t, h["title"], now.date())
                 loud = bool(FDA_LOUD.search(h["title"]))
                 link = h["link"] if h["link"].startswith(("https:", "http:")) else ""
                 self.send(f"💊{'🚨' if loud else '📰'} <b>${html.escape(t)}</b> FDA news (FDA date {when})\n"

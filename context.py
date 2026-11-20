@@ -357,6 +357,21 @@ def exdiv_line(sym, price=None):
 
 
 # ---------------------------------------------------------------- what callers use
+def fund_line(sym, price=None):
+    """📦 price vs NAV for a listed fund (funds.py); the price is looked up when the caller has none."""
+    try:
+        import funds
+    except ImportError:
+        return ""
+    if not price and funds.nav(sym):
+        try:
+            import netcash
+            price = netcash.prices([sym]).get(sym)
+        except Exception:
+            price = None
+    return funds.line(sym, price)
+
+
 _shown = {}   # ticker -> day the full context was last attached (alerts later that day get the market line only)
 
 
@@ -369,7 +384,7 @@ def lines(sym, change=None, price=None, peer=None, market=True, once=True):
     full = not once or _shown.get(sym) != today
     out = []
     rest = (lambda: dilution_line(sym), lambda: listing_line(sym), lambda: taxloss_line(sym),
-            lambda: short_line(sym), lambda: exdiv_line(sym, price)) if full else ()
+            lambda: short_line(sym), lambda: exdiv_line(sym, price), lambda: fund_line(sym, price)) if full else ()
     for fn in (((lambda: market_line(sym, change, peer)),) if market and change is not None else ()) + rest:
         if fn is None:
             continue

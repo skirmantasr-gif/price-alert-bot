@@ -77,6 +77,14 @@ try:
 except ImportError:  # phone copy without predict.py
     predict = None
 try:
+    import activist
+except ImportError:  # phone copy without activist.py
+    activist = None
+try:
+    import netcash
+except ImportError:  # phone copy without netcash.py
+    netcash = None
+try:
     import context
 except ImportError:  # phone copy without context.py
     context = None
@@ -747,6 +755,11 @@ def main():
     ev_res = (catalysts.ResultWatch(send_telegram, lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID),
                                     TICKERS, pattern=earn_watch.pattern if earn_watch else None)
               if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.ResultWatch.enabled() else None)
+    act_watch = (activist.ActivistWatch(lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID), TICKERS)
+                 if activist and HEARTBEAT_ROLE != "phone" and activist.ActivistWatch.enabled() else None)
+    cash_screen = (netcash.NetCashScreen(lambda text, silent: send_telegram(text, silent, BUYOUT_CHAT_ID))
+                   if netcash and HEARTBEAT_ROLE != "phone" and BUYOUT_CHAT_ID and netcash.NetCashScreen.enabled()
+                   else None)
     wk_review = (weekly.WeeklyReview(send_telegram, practice)
                  if weekly and HEARTBEAT_ROLE != "phone" and weekly.WeeklyReview.enabled() else None)
     board = None
@@ -789,6 +802,10 @@ def main():
             checks.append(("FDA news", fda_news.check))
         if preds:
             checks.append(("Forecast scoring", preds.check))
+        if act_watch:
+            checks.append(("Activist watch", act_watch.check))
+        if cash_screen:
+            checks.append(("Net-cash screen", cash_screen.check))
         if reviewer:
             checks.append(("Learning review", reviewer.check))
         if board:
