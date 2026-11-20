@@ -517,3 +517,131 @@ class ResultWatch:
 
 def options_day(iso):
     return datetime.strptime(iso, "%Y-%m-%d").strftime("%a %b %d") if iso else "?"
+
+
+# ---------------------------------------------------------------- 💊📰 news for FDA-calendar stocks off the watchlist
+# Owner 2026-11-20 after SVRA (not on the watchlist): the FDA missed its Nov 22 date and the bot said nothing.
+NEWS_BEFORE, NEWS_AFTER = 30, 14          # follow a stock from 30 days before its FDA date to 14 days after
+NEWS_SECONDS, SEC_SECONDS = 300, 900
+NEWS_MAX_AGE_H = 48
+FDA_NEWS = re.compile(r"\bFDA\b|approv\w*|PDUFA|complete response|\bCRL\b|action date|advisory committee|"
+                      r"\b(BLA|NDA|sNDA|sBLA)\b|refus\w*|reject\w*|delay\w*|extend\w*|will not (meet|take action)", re.I)
+FDA_LOUD = re.compile(r"approv\w*|complete response|\bCRL\b|reject\w*|refus\w*|will not (meet|take action)|"
+                      r"delay\w*|miss\w*", re.I)
+
+
+def _rss(url):
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    import earnings
+    out = []
+    for it in ET.fromstring(earnings._yget(url)).iter("item"):
+        try:
+            d = parsedate_to_datetime(it.findtext("pubDate") or "")
+        except Exception:
+            d = None
+        out.append({"title": html.unescape((it.findtext("title") or "").strip()), "link": (it.findtext("link") or "").strip(),
+                    "date": d})
+    return out
+
+
+def _hash(x):
+    import hashlib
+    return hashlib.sha1(x.encode()).hexdigest()[:12]
+
+
+class FdaNewsWatch:
+    """For every FDA-calendar stock that is NOT on the watchlist (news.py covers those), around its date:
+    FDA-related Yahoo headlines (loud for a decision, rejection or delay) and new 8-K / 6-K filings (quiet, with
+    the 🤖 summary). The first look at a stock only learns what is already out there."""
+
+    def __init__(self, send, tickers, headlines=None, filings_of=None, summarize=None):
+        self.send, self.watch = send, set(tickers)
+        self.headlines = headlines or (lambda t: _rss("https://feeds.finance.yahoo.com/rss/2.0/headline?" +
+                                                      urllib.parse.urlencode({"s": t, "region": "US", "lang": "en-US"})))
+        self.filings_of = filings_of
+        self.summarize = summarize
+        self.last, self.last_sec = float("-inf"), float("-inf")
+
+    @staticmethod
+    def enabled():
+        return ON
+
+    def tickers(self, state, today):
+        out = {}
+        for e in ((state.get("_fdacal") or {}).get("ev") or {}).values():
+            d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+            if e["t"] not in self.watch and -NEWS_AFTER <= (d - today).days <= NEWS_BEFORE:
+                out.setdefault(e["t"], e)
+        return out
+
+    def check(self, state, now=None):
+        mono = time.monotonic()
+        if now is None and mono - self.last < NEWS_SECONDS:
+            return False
+        self.last = mono
+        now = now or extras.local_now()
+        fn = state.setdefault("_fdanews", {"seen": [], "init": []})
+        seen, init = set(fn["seen"]), set(fn["init"])
+        changed = False
+        do_sec = self.filings_of is not None and (mono - self.last_sec >= SEC_SECONDS or now is not None)
+        if do_sec:
+            self.last_sec = mono
+        from datetime import timezone
+        cut = datetime.now(timezone.utc) - timedelta(hours=NEWS_MAX_AGE_H)
+        for t, e in self.tickers(state, now.date()).items():
+            first = t not in init
+            when = datetime.strptime(e["date"], "%Y-%m-%d").strftime("%a %b %d")
+            try:
+                heads = self.headlines(t)
+            except Exception as ex:
+                log.info("FDA news: headlines unavailable (%s)", type(ex).__name__)
+                heads = []
+            for h in heads:
+                if not FDA_NEWS.search(h["title"]) or (h.get("date") and h["date"] < cut):
+                    continue
+                k = _hash("n:" + t + ":" + h["title"].lower())
+                if k in seen:
+                    continue
+                seen.add(k)
+                changed = True
+                if first:
+                    continue
+                loud = bool(FDA_LOUD.search(h["title"]))
+                link = h["link"] if h["link"].startswith(("https:", "http:")) else ""
+                self.send(f"💊{'🚨' if loud else '📰'} <b>${html.escape(t)}</b> FDA news (FDA date {when})\n"
+                          f"{html.escape(h['title'])}" + (f'\n<a href="{html.escape(link)}">Read</a>' if link else ""),
+                          not loud)
+                log.info("FDA news sent")
+            if do_sec:
+                try:
+                    fl = [f for f in self.filings_of(t) if str(f.get("form", "")).upper().startswith(("8-K", "6-K"))]
+                except Exception as ex:
+                    log.info("FDA news: SEC unavailable (%s)", type(ex).__name__)
+                    fl = []
+                for f in fl[:5]:
+                    k = _hash("s:" + str(f.get("acc")))
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    changed = True
+                    if first:
+                        continue
+                    lines = [f"💊📄 <b>${html.escape(t)}</b> SEC filing {html.escape(str(f.get('form')))} (FDA date {when})"]
+                    try:
+                        import filings
+                        s = self.summarize(dict(f, ticker=t), e.get("name", t)) if self.summarize else None
+                        lines += filings.lines(s)
+                    except Exception:
+                        pass
+                    if str(f.get("link", "")).startswith("https:"):
+                        lines.append(f'<a href="{html.escape(f["link"])}">Open filing</a>')
+                    self.send("\n".join(lines), True)
+                    log.info("FDA news: filing sent")
+            if first:
+                init.add(t)
+                changed = True
+        if changed:
+            fn["seen"] = list(seen)[-1500:]
+            fn["init"] = sorted(init)[-300:]
+        return changed

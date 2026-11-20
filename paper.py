@@ -100,6 +100,14 @@ PORTFOLIOS = {
 ONLY = {"insider": "insider"}  # source traded by ONE portfolio only (never reaches the other rules)
 # Per-portfolio exits (default: the module constants). trail None = no profit lock; days = sell after N days.
 EXITS = {"insider": {"stop": -0.15, "take": 0.30, "trail": None, "days": 90}}
+# 👥 owner 2026-11-20: "€10 per cluster" — every new cluster is bought, no 10-position cap; when the cash is used up,
+# €10 of fresh play money is added ("topped up") so the test keeps growing. Returns are measured on €100 + top-ups.
+TOPUP = {"insider": 10.0}
+
+
+def base(pf):
+    """Money put in: the €100 start plus any top-ups."""
+    return START_EUR + pf.get("topup", 0.0)
 
 
 def exits(key):
@@ -276,9 +284,15 @@ def on_signal(st, sig, now=None):
                 pf["cash"] += o.get("eur", SIZE_EUR)
                 _log(pf, now, a="cancel", tk=tk, why="DOWN call before the order filled")
         else:
-            size = SIZE_STRONG_EUR if sig["c"] == "high" else SIZE_EUR
-            if (rule(sig) and key not in PAUSED and tk not in pf["open"] and tk not in pf["pending"]
-                    and len(pf["open"]) + len(pf["pending"]) < MAX_OPEN and pf["cash"] >= size - 1e-9):
+            size = TOPUP.get(key) or (SIZE_STRONG_EUR if sig["c"] == "high" else SIZE_EUR)
+            wants = rule(sig) and key not in PAUSED and tk not in pf["open"] and tk not in pf["pending"]
+            if wants and key in TOPUP and pf["cash"] < size - 1e-9:
+                add = size - max(pf["cash"], 0.0)
+                pf["cash"] += add
+                pf["topup"] = pf.get("topup", 0.0) + add
+                _log(pf, now, a="topup", tk=tk, eur=round(add, 2))
+            if (wants and (key in TOPUP or len(pf["open"]) + len(pf["pending"]) < MAX_OPEN)
+                    and pf["cash"] >= size - 1e-9):
                 pf["cash"] -= size  # reserved until the order fills
                 pf["pending"][tk] = {"t": int(now), "src": sig["src"], "c": sig["c"], "alert_p": sig.get("p0"), "eur": size}
                 _log(pf, now, a="order", tk=tk, src=sig["src"], c=sig["c"], eur=size)
@@ -356,6 +370,11 @@ def _peak(data, tk, pos, now):
 def _age(sec):
     h = sec / 3600
     return f"{h * 60:.0f} min" if h < 1 else f"{h:.0f}h" if h < 48 else f"{h / 24:.0f} days"
+
+
+def _put_in(pf):
+    """' on €100 + €20 added' for a topped-up portfolio, else ''."""
+    return f" on €{START_EUR:.0f} + €{pf['topup']:.0f} added" if pf.get("topup") else ""
 
 
 def _pct(x):
@@ -520,7 +539,7 @@ def report(st, now, data, title):
         v = value(pf, now, data)
         won = sum(1 for c in pf["closed"] if c["ret"] > 0)
         wait = len(pf.get("pending", {}))
-        lines.append(f"{name}: <b>€{v:.2f}</b> ({(v / START_EUR - 1) * 100:+.1f}%) · {len(pf['open'])} open"
+        lines.append(f"{name}: <b>€{v:.2f}</b> ({(v / base(pf) - 1) * 100:+.1f}%{_put_in(pf)}) · {len(pf['open'])} open"
                      + (f" · {wait} waiting for the open" if wait else "") + f" · {len(pf['closed'])} closed"
                      + (f" ({won} won)" if pf["closed"] else "") + _dd(pf.get("eq")))
         if stats(pf):
@@ -586,7 +605,7 @@ def account(st, key, now, data):
     total = cash + reserved + stock_val
     realized = sum(c["eur"] for c in pf["closed"])
     invested = sum(p.get("cost", SIZE_EUR) for p in pf["open"].values())
-    head = (f"{name}: <b>€{total:.2f}</b> ({_pct(total / START_EUR - 1)}){_dd(pf.get('eq'))}\n"
+    head = (f"{name}: <b>€{total:.2f}</b> ({_pct(total / base(pf) - 1)}{_put_in(pf)}){_dd(pf.get('eq'))}\n"
             f"   💵 Free cash €{cash:.2f}" + (f" · ⏳ reserved €{reserved:.0f}" if reserved else "")
             + (f" · 📈 in stocks €{stock_val:.2f}" if pf["open"] else "") + (f" (invested €{invested:.0f}, {stock_val - invested:+.2f})" if invested else "")
             + (f"\n   ✔️ Closed trades: {len(pf['closed'])}, profit {realized:+.2f} €" if pf["closed"] else ""))

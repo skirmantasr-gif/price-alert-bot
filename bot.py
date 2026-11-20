@@ -103,6 +103,7 @@ except ImportError:
     scoreboard = None
 from news import NewsWatcher
 from news import sec_cik as news_sec_cik
+from news import sec_filings as _news_sec_filings
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
@@ -732,6 +733,15 @@ def main():
                 if options and HEARTBEAT_ROLE != "phone" and options.HistoryWatch.enabled() else None)
     fda_cal = (catalysts.FdaCalendar(send_telegram, TICKERS)
                if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.FdaCalendar.enabled() else None)
+    fda_news = None
+    if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.FdaNewsWatch.enabled():
+        try:
+            import filings as _filings
+            fda_news = catalysts.FdaNewsWatch(send_telegram, TICKERS,
+                                              filings_of=_news_sec_filings if os.environ.get("SEC_CONTACT", "").strip() else None,
+                                              summarize=_filings.summarize)
+        except Exception:
+            fda_news = catalysts.FdaNewsWatch(send_telegram, TICKERS)
     preds = (predict.PredictionWatch(lambda text, silent: send_telegram(text, silent, PAPER_CHAT_ID or None))
              if predict and HEARTBEAT_ROLE != "phone" and predict.PredictionWatch.enabled() else None)
     ev_res = (catalysts.ResultWatch(send_telegram, lambda text, silent: send_telegram(text, silent, CONTRACTS_CHAT_ID),
@@ -775,6 +785,8 @@ def main():
             checks.append(("FDA calendar", fda_cal.check))
         if ev_res:
             checks.append(("Event results", ev_res.check))
+        if fda_news:
+            checks.append(("FDA news", fda_news.check))
         if preds:
             checks.append(("Forecast scoring", preds.check))
         if reviewer:
