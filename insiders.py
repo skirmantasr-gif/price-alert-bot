@@ -217,6 +217,35 @@ def cluster(rows, today, days=CLUSTER_DAYS):
     return len(owners), total, sorted(win)
 
 
+# 🔮 What past clusters did when simply held 90 days (owner 2026-11-20: "still no info whether expected to go up or
+# down"). From the 4-year backtest (studies/insider_backtest.py, 2,203 clusters Oct 2022 - Sep 2026, buy next open):
+# (rose %, middle result %, average %, average vs small caps IWM %, number of past clusters)
+HIST = {("2", "ge5"): (53, 1.1, 2.4, -0.8, 1289), ("3", "ge5"): (56, 2.6, 5.3, 1.8, 561),
+        ("2", "lt5"): (51, 1.9, 16.7, 14.8, 234), ("3", "lt5"): (49, -1.3, 8.6, 7.2, 119)}
+HOLD_DAYS = 90
+
+
+def expectation(n, price, today=None):
+    """'🔮 Expected …' line from past clusters of the same kind (insiders 2 / 3+, price under / over $5), or ''."""
+    if not price:
+        return ""
+    key = ("3" if n >= 3 else "2", "lt5" if price < 5 else "ge5")
+    up, med, avg, vs, cnt = HIST[key]
+    until = ((today or datetime.now(timezone.utc)) + timedelta(days=HOLD_DAYS)).strftime("%b %d")
+    skewed = avg >= 8 and avg >= 3 * max(med, 1)      # the average is made by a few huge winners
+    if vs >= 1.5 and skewed:
+        verdict = "📈 <b>leans UP, lottery-like</b>: about half fall, a few big winners carry the average"
+    elif vs >= 1.5:
+        verdict = "📈 <b>leans UP</b>, slightly"
+    elif vs > -1.5:
+        verdict = "↔️ <b>no real edge</b> over small caps"
+    else:
+        verdict = "📉 <b>tends to lag</b> small caps"
+    kind = f"{'3+' if key[0] == '3' else '2'} insiders, stock {'under' if key[1] == 'lt5' else 'over'} $5"
+    return (f"🔮 Expected until ~{until}: {verdict} — past clusters like this ({kind}, {cnt:,} cases) rose in {up}% · "
+            f"middle result {med:+.1f}% · average {avg:+.1f}% · vs small caps {vs:+.1f}%")
+
+
 def _usd(v):
     return f"${v / 1e6:.1f}M" if v >= 1e6 else f"${v / 1e3:.0f}k"
 
@@ -242,10 +271,13 @@ def message(tk, company, n, total, rows, cap=None, now_px=None, avg_px=None):
         facts.append(f"price now ${now_px:,.2f}")
     if facts:
         lines.append(" · ".join(facts))
+    exp = expectation(n, now_px)
+    if exp:
+        lines.append(exp)
     lines.append(f'<a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;type=4&amp;'
                  f'owner=include&amp;CIK={urllib.parse.quote(tk)}">SEC filings</a>')
-    lines.append("<i>Several insiders buying with their own money is a well-studied signal, but the edge is small "
-                 "(a few % over months) and many clusters go nowhere. Not advice.</i>")
+    lines.append("<i>Past results, not a promise: the backtest misses delisted stocks (most of all under $5), and "
+                 "many clusters go nowhere. Not advice.</i>")
     return "\n".join(lines), loud
 
 
