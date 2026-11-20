@@ -1,6 +1,6 @@
 """📼 options history before FDA dates (2026-11-20)."""
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import options
 
@@ -48,7 +48,7 @@ class TestHistoryWatch(unittest.TestCase):
         w = self.watch("2026-11-20 15:45", calls)
         self.assertTrue(w.check(st))
         self.assertFalse(w.check(st))
-        self.assertEqual(calls, ["CAPR"])                       # only FDA events on the watchlist
+        self.assertEqual(calls, ["CAPR", "BZUN"])               # watchlist FDA + earnings (not XXXX, not on it)
         self.assertIn("2026-11-20", st["_opth"]["CAPR:2026-11-22"]["snaps"])
 
     def test_not_before_close_or_weekend(self):
@@ -80,8 +80,8 @@ class TestHistoryWatch(unittest.TestCase):
         self.assertFalse(w.check(st))
 
     def test_size_cap(self):
-        st = {"_opth": {f"T{i}:2026-01-{i + 1:02d}": {"t": f"T{i}", "event": f"2026-01-{i + 1:02d}", "label": "x",
-                                                     "snaps": {}} for i in range(25)}}
+        days = [(date(2026, 1, 1) + timedelta(days=i)).isoformat() for i in range(options.HIST_MAX_EVENTS + 5)]
+        st = {"_opth": {f"T{i}:{d}": {"t": f"T{i}", "event": d, "label": "x", "snaps": {}} for i, d in enumerate(days)}}
         self.watch("2026-11-20 16:00", []).check(st)
         self.assertEqual(len(st["_opth"]), options.HIST_MAX_EVENTS)
         self.assertNotIn("T0:2026-01-01", st["_opth"])

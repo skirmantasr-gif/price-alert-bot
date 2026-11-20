@@ -31,7 +31,8 @@ CAPS = {"ZNTX": 800e6, "ACMO": 45e9}   # Acmeco too big for a buyout signal
 
 
 def row(t):
-    return {"t": t, "score": 4, "hits": [], "name": NAMES[t], "price": 10.0, "mcap": CAPS.get(t, 500e6),
+    # QWRT (a rumour) doesn't fit the buyout fingerprint: rumours are posted only for stocks scoring >= MIN_SCORE - 1
+    return {"t": t, "score": 2 if t == "QWRT" else 4, "hits": [], "name": NAMES[t], "price": 10.0, "mcap": CAPS.get(t, 500e6),
             "off_high": -0.4, "avg_vol": 1e5}
 
 
