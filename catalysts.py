@@ -49,7 +49,7 @@ GENERIC_RE = re.compile(r"\b(failing to meet|failed to meet|miss(es|ed)? (its|th
 AFTER, BEFORE = 160, 90      # a date this close after (or before) the PDUFA words belongs to them
 EXTEND_RE = re.compile(r"\bextend\w*|\bextension\b|\bnew (PDUFA|target|goal)\b|\brevised\b|\bmoved\b|\bupdated\b", re.I)
 FIRST_PERSON = re.compile(r"\b(we|our|us|the company(['’]s)?)\b", re.I)
-CAL_V = 2                    # raise to rebuild _fdacal from scratch (rules changed)
+CAL_V = 3                    # raise to rebuild _fdacal from scratch (rules changed)
 DATE_Y = re.compile(r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|"
                     r"Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(20\d\d)\b",
                     re.I)
@@ -97,7 +97,7 @@ def other_company(snip, own, names):
 
 
 def find_dates(text, today=None):
-    """[(iso, snippet, extended, sentence)] of future dates with a year right after a PDUFA word (or just before it, as in
+    """[(iso, snippet, extended, sentence, wider context)] of future dates with a year right after a PDUFA word (or just before it, as in
     "an NDA with a March 29, 2027, PDUFA date"), skipping risk-factor boilerplate and early approvals (pure).
     "extended from August 22, 2026 to November 22, 2026": the first FUTURE date after the words wins."""
     today = today or date.today()
@@ -125,9 +125,10 @@ def find_dates(text, today=None):
         ext = bool(EXTEND_RE.search(sent))
         iso = dt.isoformat()
         snip = re.sub(r"\s+", " ", text[max(0, m.start() - 90):m.end() + 130]).strip()
+        wide = text[max(0, m.start() - 250):m.end() + 160]      # "Vanda Quimilza … • FDA target action date …"
         if iso not in out or (ext and not out[iso][1]):
-            out[iso] = (snip, ext, sent)
-    return [(k, v[0], v[1], v[2]) for k, v in sorted(out.items())]
+            out[iso] = (snip, ext, sent, wide)
+    return [(k, v[0], v[1], v[2], v[3]) for k, v in sorted(out.items())]
 
 
 def ticker_of(display_names):
@@ -210,16 +211,25 @@ class FdaCalendar:
                 continue
             read += 1
             found = find_dates(_text(raw[:DOC_BYTES]), today)
-            if not str(so.get("form") or so.get("file_type") or "").upper().startswith(("8-K", "6-K")):
-                # quarterly / annual reports describe rivals' drugs too ("povetacicept … PDUFA date of November 30"
-                # in Akebia's and Jade's 10-Qs): only sentences about the company itself count there
-                own = first_word(name)
-                found = [x for x in found if FIRST_PERSON.search(x[3]) or (own and re.search(
-                    r"\b" + re.escape(own) + r"\b", x[3].lower()))]
-            out.append((t, name, so.get("file_date", ""), found, _id))
+            report = not str(so.get("form") or so.get("file_type") or "").upper().startswith(("8-K", "6-K"))
+            out.append((t, name, so.get("file_date", ""), [x + (report,) for x in found], _id))
             time.sleep(0.25)
         names = {first_word(n) for _, n, _, _, _ in out if n} - {""}
-        out = [(t, n, f, [x[:3] for x in found if not other_company(x[3], first_word(n), names)], k)
+        # 1) a sentence (or the words just before it) naming another company of this scan is that company's date
+        out = [(t, n, f, [x for x in found if not other_company(x[4], first_word(n), names)], k)
+               for t, n, f, found, k in out]
+        # 2) quarterly / annual reports describe rivals' drugs too ("povetacicept … PDUFA date of November 30" in
+        #    Akebia's and Jade's 10-Qs): there a sentence that isn't about the company itself ("we", its name) only
+        #    counts if no other company of this scan has the same date
+        claims = {}
+        for t, n, f, found, k in out:
+            for x in found:
+                claims.setdefault(x[0], set()).add(t)
+
+        def own_line(x, n):
+            w = first_word(n)
+            return bool(FIRST_PERSON.search(x[3]) or (w and re.search(r"\b" + re.escape(w) + r"\b", x[3].lower())))
+        out = [(t, n, f, [x[:3] for x in found if not x[5] or own_line(x, n) or claims.get(x[0], set()) <= {t}], k)
                for t, n, f, found, k in out]
         log.info("FDA calendar: %d filings found, %d read", len(hits), read)
         return out
