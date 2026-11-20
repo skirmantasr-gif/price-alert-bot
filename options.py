@@ -11,7 +11,8 @@ What is shown and why (owner, 2026-11-12: "price can depend on option due date")
   - unusual activity: contracts trading far above existing open positions (new bets; can be buys OR sells)
 Used in: ☀️ daily check (expiry week), price / volume alerts (≤ 5 days before a monthly expiry), 📊 earnings
 patterns (expected move vs past moves), 🧭 hourly outlook (AI input), quiet 🎲 unusual-activity alerts,
-📼 HistoryWatch: one snapshot per trading day for watchlist stocks with an FDA date ahead (owner 2026-11-20: free
+🎲 lean: today's unusual call vs put money gives "expect a RISE / FALL until <expiry>", every lean is
+scored at that date (owner 2026-11-20); 📼 HistoryWatch: one snapshot per trading day for watchlist stocks with an FDA date ahead (owner 2026-11-20: free
 sources have no past option chains, so we keep our own to compare the next PDUFA against).
 GitHub only; every failure is silent for the caller (returns None)."""
 import calendar
@@ -35,6 +36,11 @@ UNUSUAL_MIN_VOL = 500         # contracts
 UNUSUAL_VOL_OI = 2.0          # today's volume vs existing open interest
 UNUSUAL_MIN_USD = 100_000     # premium traded
 UNUSUAL_SECONDS = 1800
+POST_GAP = 3600               # one 🎲 message per stock per hour at most (owner 2026-11-20: ORCL posted 4× in an hour)
+LEAN_SHARE = 0.65             # calls (or puts) >= 65% of today's unusual premium = a lean
+LEAN_MAX_DAYS = 60            # longer-dated contracts are mostly hedges / long-term bets: left out of the lean
+LEAN_MIN_DAYS = 3             # expiring this week = mostly closing / rolling old positions, not new bets
+LEAN_MAX_AWAY = 0.20          # strikes more than 20% from the price (crash insurance, lottery calls): left out too
 MAX_BYTES = 30_000_000
 _SYM = re.compile(r"^([A-Z.]+?)(\d{6})([CP])(\d{8})$")
 _cache = {}                   # symbol -> (time, summary or None)
@@ -194,12 +200,60 @@ def outlook_input(sym):
             if k in ("exp", "days", "max_pain", "call_wall", "put_wall", "pc_ratio", "move_pct", "iv30")}
 
 
+def lean(rows, today=None, price=None):
+    """Direction of today's unusual premium (owner 2026-11-20: "expect to rise until / expect to fall until").
+    rows = unusual() output. {'dir': up/down/mixed, 'until': iso, 'calls', 'puts', 'strike'} or None."""
+    today = today or date.today()
+    near = [u for u in rows if LEAN_MIN_DAYS <= (datetime.strptime(u[0], "%Y-%m-%d").date() - today).days <= LEAN_MAX_DAYS
+            and (not price or abs(u[2] / price - 1) <= LEAN_MAX_AWAY)]
+    calls = sum(u[5] for u in near if u[1] == "C")
+    puts = sum(u[5] for u in near if u[1] == "P")
+    if calls + puts < UNUSUAL_MIN_USD:
+        return None
+    share = calls / (calls + puts)
+    d = "up" if share >= LEAN_SHARE else "down" if share <= 1 - LEAN_SHARE else "mixed"
+    side = [u for u in near if u[1] == ("C" if d == "up" else "P" if d == "down" else u[1])]
+    by_exp = {}
+    for u in side:
+        by_exp[u[0]] = by_exp.get(u[0], 0) + u[5]
+    until = max(by_exp, key=by_exp.get)
+    top = [u for u in side if u[0] == until]
+    strike = sum(u[2] * u[5] for u in top) / sum(u[5] for u in top)
+    return {"dir": d, "until": until, "calls": calls, "puts": puts, "strike": strike}
+
+
+def _m(x):
+    return f"${x / 1e6:.1f}M" if x >= 1e6 else f"${x / 1e3:.0f}k"
+
+
+def lean_line(ln):
+    if not ln:
+        return ""
+    money = f"calls {_m(ln['calls'])} vs puts {_m(ln['puts'])} today"
+    if ln["dir"] == "up":
+        return (f"📈 <b>Options bets expect a RISE until {_d(ln['until'])}</b> — {money} "
+                f"(biggest bets on above ~{_p(ln['strike'])})")
+    if ln["dir"] == "down":
+        return (f"📉 <b>Options bets expect a FALL until {_d(ln['until'])}</b> — {money} "
+                f"(biggest bets on below ~{_p(ln['strike'])})")
+    return f"↔️ Options bets are mixed — {money}, no clear direction"
+
+
+def score_line(leans):
+    done = [x for x in leans if x.get("right") is not None]
+    if not done:
+        return "📒 Past leans: none scored yet (each is checked at its 'until' date)"
+    right = sum(1 for x in done if x["right"])
+    return f"📒 Past leans: {right} of {len(done)} right (checked at the 'until' date)"
+
+
 class UnusualWatch:
     """Quiet 🎲 message when a watchlist stock's options trade far above their open positions (once per contract
     per day). New bets - buyers or sellers - often ahead of news; never a direction by itself."""
 
-    def __init__(self, send, tickers):
+    def __init__(self, send, tickers, close_on=None, now=None):
         self.send, self.tickers, self.last = send, list(tickers), float("-inf")
+        self.close_on, self.now = close_on, now or time.time
 
     @staticmethod
     def enabled():
@@ -212,10 +266,15 @@ class UnusualWatch:
         st = state.setdefault("_opt", {})
         today = date.today().isoformat()
         seen = st.get("seen", {}) if st.get("day") == today else {}
-        changed = False
+        last_post = st.setdefault("last_post", {})
+        leans = st.setdefault("leans", [])
+        changed = self._score(leans, today)
+        now = self.now()
         for t in self.tickers:
+            if t in last_post and now - last_post[t] < POST_GAP:
+                continue          # new contracts wait for the next hourly message (they stay unseen until then)
             s = get(t)
-            new = [u for u in (s or {}).get("unusual", []) if f"{t}:{u[0]}:{u[1]}:{u[2]}" not in seen][:3]
+            new = [u for u in (s or {}).get("unusual", []) if f"{t}:{u[0]}:{u[1]}:{u[2]}" not in seen][:5]
             if not new:
                 continue
             for u in new:
@@ -224,11 +283,42 @@ class UnusualWatch:
             for exp, cp, k, vol, oi, usd in new:
                 lines.append(f"• {vol:,} {'calls' if cp == 'C' else 'puts'} {_p(k)} {_d(exp)} · {vol / max(oi, 1):.0f}× "
                              f"the open positions · about ${usd / 1e3:,.0f}k traded")
-            lines.append("<i>New bets, buyers or sellers - often before news, but no direction by itself.</i>")
+            ln = lean(s.get("unusual", []), price=s.get("price"))
+            if ln:
+                lines.append(lean_line(ln))
+                if ln["dir"] in ("up", "down") and s.get("price") and not any(
+                        x["t"] == t and x["made"] == today and x["dir"] == ln["dir"] for x in leans):
+                    leans.append({"t": t, "dir": ln["dir"], "until": ln["until"], "p0": s["price"], "made": today})
+                    del leans[:-300]
+                lines.append(score_line(leans))
+            lines.append("<i>Options data can't show who bought and who sold, so a lean is a hint, not a forecast. "
+                         "Not advice.</i>")
             self.send("\n".join(lines), True)
+            last_post[t] = now
             changed = True
         st.update({"day": today, "seen": seen})
         return changed
+
+    def _score(self, leans, today):
+        """Lean right = the close on its 'until' day (or the next trading day) moved the expected way."""
+        changed = False
+        for x in leans:
+            if x.get("right") is not None or x["until"] >= today:
+                continue
+            try:
+                got = (self.close_on or _close_on)(x["t"], x["until"])
+            except Exception:
+                continue
+            if got:
+                x["close"] = round(got[1], 4)
+                x["right"] = got[1] > x["p0"] if x["dir"] == "up" else got[1] < x["p0"]
+                changed = True
+        return changed
+
+
+def _close_on(t, day):
+    import predict
+    return predict.close_on(t, day)
 
 
 DAILY_DAYS = 7
