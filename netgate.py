@@ -37,6 +37,8 @@ _st = {}              # host -> {"until", "delay", "since", "notified", "day"}
 _loaded = False
 _out = []             # pending Telegram messages
 _mem = {}             # host -> (last pause s, recovered at) for blocks soon after a recovery
+_told = {}            # host -> day of the last ⚠️ notice. Kept apart from _st: _ok() drops _st[host], and the
+                      # old "day" there was lost with it → ⚠️/✅ 3–4× a day (owner 2026-11-22: "1 do")
 
 
 class Blocked(Exception):
@@ -114,13 +116,14 @@ def notices():
         msgs, _out[:] = list(_out), []
         for host, s in _st.items():
             name, _, cap, loud = HOSTS[host]
-            if not loud or s.get("day") == today or now - s.get("since", now) < NOTICE_AFTER:
+            if not loud or _told.get(host) == today or now - s.get("since", now) < NOTICE_AFTER:
                 continue
-            s["day"], s["notified"] = today, True
+            _told[host] = s["day"] = today
+            s["notified"] = True
             mins = max(1, int((s["until"] - now) // 60))
             msgs.append(f"⚠️ {name} is blocking the bot (HTTP {s.get('code')}, too many requests). Its searches "
                         f"are paused; next try in ~{mins} min (waits grow up to {cap // 3600} h). "
-                        f"Other news sources keep working. Max one such message per day.")
+                        f"Other news sources keep working. Max one such message per day; later blocks today only show in the ☀️ daily check.")
     return msgs
 
 
@@ -142,8 +145,12 @@ def attach(state):
             for h, s in (state.get("_net") or {}).items():
                 if h in HOSTS and isinstance(s, dict):
                     _st[h] = {k: v for k, v in s.items() if k in ("until", "delay", "since", "notified", "day", "code")}
+            _told.update({h: d for h, d in (state.get("_net_told") or {}).items() if h in HOSTS})
         snap = {h: dict(s) for h, s in _st.items()}
-    changed = state.get("_net") != snap
+        told = dict(_told)
+    changed = state.get("_net") != snap or state.get("_net_told", {}) != told
+    if told:
+        state["_net_told"] = told
     if snap:
         state["_net"] = snap
     else:
@@ -157,4 +164,5 @@ def _reset():   # tests
         _st.clear()
         _out.clear()
         _mem.clear()
+        _told.clear()
         _loaded = False
