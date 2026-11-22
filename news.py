@@ -776,6 +776,15 @@ class NewsWatcher:
             seen[key] = today
             changed = True
             d = item.get("date")
+            if item.get("kind") == "news" and (not d or d.timestamp() > now.timestamp() - 14 * 86400):
+                # every fresh headline (also first-look, stale and AI-repeat ones): FDA date missed / decided?
+                # Owner 2026-11-22: only SENT items were checked, so SVRA (added after its news) and CAPR stayed open.
+                try:
+                    import catalysts
+                    changed |= catalysts.mark_news(state, item["ticker"], item["title"],
+                                                   names=COMPANIES.get(item["ticker"], {}).get("match"))
+                except Exception:
+                    pass
             if silent or (d and d.timestamp() < cutoff):
                 return
             if d and item.get("kind") == "news" and item.get("source") != "FDA.gov" and d.timestamp() < news_cutoff:
@@ -928,12 +937,6 @@ class NewsWatcher:
             if learn:
                 learn.record_news(state, it)
             extras.bump(state, "sec" if it["kind"] == "sec" else "news")
-            if it["kind"] == "news":
-                try:
-                    import catalysts
-                    changed |= catalysts.mark_missed(state, it["ticker"], it["title"])
-                except Exception:
-                    pass
             _recent_add(ns, it["ticker"], it["title"] if it["kind"] == "news" else extras._strip(msg.split("\n")[0]))
             changed = True
             if it.get("contract") or it["kind"] == "gov":

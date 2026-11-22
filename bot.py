@@ -130,6 +130,28 @@ THRESHOLDS = watchlist.THRESHOLDS  # ticker -> fraction, e.g. 0.02
 # hold ±step alerts that long, unless the move is already OPEN_BIG_X times the step.
 OPEN_HOLD = int(os.environ.get("OPEN_HOLD_MINUTES", "15")) * 60
 OPEN_BIG_X = 3
+# Owner 2026-11-22 ("1. do"): CAPR's CRL night (−80% after hours) sent ~40 price alerts in 1 h 40 min, one per
+# ±4–10% wiggle. On a "big day" (≥ BIG_DAY vs the previous close) the step widens to BIG_DAY_STEP and alerts are
+# at least BIG_DAY_GAP apart, unless the move since the last alert is ≥ BIG_DAY_JUMP (a real new leg).
+BIG_DAY = float(os.environ.get("BIG_DAY_PCT", "0.25"))
+BIG_DAY_STEP = float(os.environ.get("BIG_DAY_STEP", "0.10"))
+BIG_DAY_GAP = int(os.environ.get("BIG_DAY_GAP_SECONDS", "900"))
+BIG_DAY_JUMP = float(os.environ.get("BIG_DAY_JUMP", "0.25"))
+
+
+def big_day_hold(change, day_chg, step, ref_time, now=None):
+    """True = don't alert yet (big-day damping). step = the stock's normal step."""
+    if day_chg is None or abs(day_chg) < BIG_DAY:
+        return False
+    if abs(change) < max(step, BIG_DAY_STEP):
+        return True
+    if abs(change) >= BIG_DAY_JUMP:
+        return False
+    try:
+        last = datetime.fromisoformat(ref_time).timestamp()
+    except Exception:
+        return False
+    return (now or time.time()) - last < BIG_DAY_GAP
 HEARTBEAT_ROLE = os.environ.get("HEARTBEAT_ROLE", "").strip().lower()
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 STATE_FILE = os.environ.get("STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"))
@@ -690,8 +712,21 @@ def check(ticker, state, errors, volume=None):
     ref = s["ref"]
     change = price / ref - 1
     step = THRESHOLDS.get(ticker, 0.02)
+    day_chg0 = price / prev_close - 1 if prev_close else None
+    if catalysts and HEARTBEAT_ROLE != "phone" and day_chg0 is not None:
+        try:
+            from zoneinfo import ZoneInfo
+            shock = catalysts.shock_check(state, ticker, day_chg0, session,
+                                          datetime.now(ZoneInfo("America/New_York")).date())
+            if shock:
+                send_telegram(shock)       # loud; marked in state even if Telegram fails (no repeats)
+                changed = True
+        except Exception as e:
+            log.warning("FDA shock check failed: %s", type(e).__name__)
     if session == "regular" and abs(change) < OPEN_BIG_X * step and in_open_hold(ticker):
         return changed  # opening swings: compare again after the hold (the reference price stays)
+    if abs(change) >= step and big_day_hold(change, day_chg0, step, s.get("ref_time")):
+        return changed  # big day: wait for a bigger move / the gap (the reference price stays)
     if abs(change) >= step:
         up = change > 0
         day = f"\nDay: {fmt_pct(price / prev_close - 1)} vs prev close ${fmt_price(prev_close)}" if prev_close else ""

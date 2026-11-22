@@ -448,6 +448,21 @@ def calendar_upcoming(state, days=14):
     return sorted((e for e in cal if today.isoformat() <= e[1] <= end), key=lambda e: e[1])
 
 
+def _fda_status(state, e):
+    """Owner 2026-11-22: CAPR/SVRA stayed "— TODAY" in the ☀️ list after the CRL / the FDA's missed-date notice."""
+    if e[2] != "fda":
+        return ""
+    fc = state.get("_fdacal") or {}
+    k = f"{e[0]}:{e[1]}"
+    if k in (fc.get("decided") or {}):
+        return " — ✔️ <b>already decided</b>: " + html.escape(fc["decided"][k]["title"][:90])
+    if k in (fc.get("missed") or {}):
+        return " — ❗ <b>the FDA said it will miss this date</b> (no new date yet)"
+    if k in (fc.get("shock") or {}):
+        return f" — ⚡ moved {fc['shock'][k]['pct']:+.0f}% on {fc['shock'][k]['at']}: decision probably out"
+    return ""
+
+
 def _day(iso):
     return datetime.strptime(iso, "%Y-%m-%d").strftime("%a %b %d")
 
@@ -616,7 +631,8 @@ class Heartbeat:
         if up:
             lines.append("📅 <b>Next 14 days</b>")
             soon = {today: " — <b>TODAY</b>", (now.date() + timedelta(days=1)).isoformat(): " — <b>TOMORROW</b>"}
-            lines += [f"• {_day(e[1])}: <b>${e[0]}</b> {html.escape(e[3])}{soon.get(e[1], '')}" for e in up]
+            lines += [f"• {_day(e[1])}: <b>${e[0]}</b> {html.escape(e[3])}{_fda_status(state, e) or soon.get(e[1], '')}"
+                      for e in up]
         lines.append("<i>Dates come from company announcements in the news; check the company's IR page.</i>"
                      if up else "📅 No earnings / FDA dates found in the news for the next 14 days.")
         self.send("\n".join(lines))

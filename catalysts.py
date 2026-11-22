@@ -284,14 +284,15 @@ class FdaCalendar:
         due = fc.get("scanned") and fc.get("list_week") != week and (
             not fc.get("listed_once") or (now.weekday() == LIST_WEEKDAY and now.strftime("%H:%M") >= LIST_TIME))
         if due:
-            text = self.list_message(fc["ev"], now.date(), fc.get("missed"))
+            text = self.list_message(fc["ev"], now.date(), fc.get("missed"), fc.get("decided"))
             if text and self.send(text, True):
                 fc["list_week"], fc["listed_once"] = week, True
                 changed = True
         return changed
 
-    def list_message(self, ev, today, missed=None):
+    def list_message(self, ev, today, missed=None, decided=None):
         missed = missed or {}
+        decided = decided or {}
         end = (today + timedelta(days=LIST_DAYS)).isoformat()
         up = sorted((e for e in ev.values() if today.isoformat() <= e["date"] <= end), key=lambda e: (e["date"], e["t"]))
         if not up:
@@ -316,8 +317,12 @@ class FdaCalendar:
             if e["t"] in self.watch:
                 bits.append("⭐ watchlist")
             miss = missed.get(f"{e['t']}:{e['date']}")
+            dec = decided.get(f"{e['t']}:{e['date']}")
             if miss:
                 bits.append("❗ FDA said it will MISS this date")
+            elif dec:
+                bits.append("✔️ already decided")
+                miss = dec
             lines.append("• " + " · ".join(bits))
             if miss:
                 lines.append(f"  <i>{html.escape(miss['title'][:160])}</i>")
@@ -362,6 +367,106 @@ def mark_missed(state, t, title, today=None):
         for k in sorted(m, key=lambda k: m[k]["at"])[:len(m) - 200]:
             del m[k]
     return changed
+
+
+# ---------------------------------------------------------------- ✔️ the FDA already decided / ⚡ price shock
+# Owner 2026-11-22 ("2. do"): the ☀️ daily check still said "CAPR FDA decision date — TODAY" two days after the
+# CRL (Nov 20) and SVRA "TODAY" after the FDA said it would miss the date.
+DECIDED_RE = re.compile(
+    r"\bFDA (has |finally )?(approves|approved|grants|granted|clears|cleared)\b|"
+    r"\bapproval (from|by) (the )?(U\.?S\.? )?FDA\b|"
+    r"\b(receives?|received|wins?|won|secures?|secured|gets?|got|obtains?|obtained) (U\.?S\.? )?FDA (accelerated |full )?approval|"
+    r"complete response letter|\bCRL\b|"
+    r"\b(FDA|agency) (declines|declined|refuses|refused) to approve|"
+    r"\bFDA (rejects|rejected|turns (back|down)|turned (back|down))\b", re.I)
+HYPO_RE = re.compile(r"\b(if|whether|would|could|may|might|expects?|expected|seeks?|seeking|awaits?|awaiting|ahead of|"
+                     r"odds|chances?|to decide|decision (due|date|looms)|potential|possible|upcoming|preview|"
+                     r"watch|faces?|will the)\b|\?", re.I)
+DECIDED_WINDOW = (-14, 30)
+SHOCK_WINDOW = (-2, 3)          # FDA date from 2 days ago to 3 days ahead
+SHOCK_PCT = float(os.environ.get("FDA_SHOCK_PCT", "0.15"))
+
+
+def _fda_dates(state, t):
+    evs = {iso for tt, iso, kind, _ in (state.get("_cal") or []) if kind == "fda" and tt == t}
+    evs |= {e["date"] for e in ((state.get("_fdacal") or {}).get("ev") or {}).values() if e["t"] == t}
+    return evs
+
+
+def decided_keys(state):
+    return ((state.get("_fdacal") or {}).get("decided") or {})
+
+
+def _names_in(title, t, names):
+    words = [t] + [n for n in (names or []) if n]
+    return any(re.search(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", title, re.I) for w in words)
+
+
+def mark_decided(state, t, title, today=None, names=None):
+    """'FDA declines to approve X' / 'X receives FDA approval' marks the stock's nearby FDA date(s) as decided.
+    The headline must name the company (ticker or a `names` word): 'FDA rejects SMMT drug — CAPR holders…' is not CAPR's."""
+    title = title or ""
+    names = list(names or []) + [e["name"].split()[0] for e in ((state.get("_fdacal") or {}).get("ev") or {}).values()
+                                 if e["t"] == t and e.get("name") and len(e["name"].split()[0]) >= 4]
+    if not DECIDED_RE.search(title) or HYPO_RE.search(title) or not _names_in(title, t, names):
+        return False
+    today = today or date.today()
+    fc = state.setdefault("_fdacal", {"ev": {}, "docs": []})
+    m = fc.setdefault("decided", {})
+    changed = False
+    for iso in _fda_dates(state, t):
+        delta = (datetime.strptime(iso, "%Y-%m-%d").date() - today).days
+        k = f"{t}:{iso}"
+        if DECIDED_WINDOW[0] <= delta <= DECIDED_WINDOW[1] and k not in m:
+            m[k] = {"title": title[:200], "at": today.isoformat()}
+            changed = True
+            log.info("FDA calendar: date marked decided")
+    if len(m) > 200:
+        for k in sorted(m, key=lambda k: m[k]["at"])[:len(m) - 200]:
+            del m[k]
+    return changed
+
+
+def mark_news(state, t, title, today=None, names=None):
+    """Every new headline about a stock: missed date? already decided?"""
+    a = mark_missed(state, t, title, today)
+    b = mark_decided(state, t, title, today, names)
+    return a or b
+
+
+def shock_check(state, t, day_chg, session, today):
+    """Owner 2026-11-22 ("5. do"): CAPR fell 40% at 01:17 LT, the first news reached the bot at 02:28 and the
+    company's own release came at 02:55. A big move a few days around a watchlist FDA date is the fastest sign the
+    decision (or a leak) is out → one loud message per FDA date. Returns the message or ''."""
+    if day_chg is None or abs(day_chg) < SHOCK_PCT:
+        return ""
+    fc = state.setdefault("_fdacal", {"ev": {}, "docs": []})
+    shocks = fc.setdefault("shock", {})
+    done = set(missed_keys(state)) | set(decided_keys(state))
+    for iso in sorted(_fda_dates(state, t)):
+        k = f"{t}:{iso}"
+        d = datetime.strptime(iso, "%Y-%m-%d").date()
+        delta = (d - today).days
+        if not (SHOCK_WINDOW[0] <= delta <= SHOCK_WINDOW[1]) or k in shocks or k in done:
+            continue
+        shocks[k] = {"pct": round(day_chg * 100, 1), "at": today.isoformat()}
+        if len(shocks) > 200:
+            for old in sorted(shocks, key=lambda x: shocks[x]["at"])[:len(shocks) - 200]:
+                del shocks[old]
+        when = {0: "TODAY", 1: "TOMORROW", -1: "YESTERDAY"}.get(delta) or (
+            f"in {delta} days" if delta > 0 else f"{-delta} days ago")
+        up = day_chg > 0
+        log.info("FDA shock message")
+        return (f"💊⚡ <b>${html.escape(t)} {'UP' if up else 'DOWN'} {day_chg * 100:+.0f}%</b> ({session}) — its FDA "
+                f"decision date is {d.strftime('%a %b %d')} ({when})\n"
+                f"A move this big this close to the date usually means the decision (or a leak) is out: "
+                f"{'up → probably APPROVED' if up else 'down → probably REJECTED (CRL) or DELAYED'}. "
+                f"The news usually follows within an hour.\n<i>Not advice.</i>")
+    return ""
+
+
+def shocked_keys(state):
+    return ((state.get("_fdacal") or {}).get("shock") or {})
 
 
 # ---------------------------------------------------------------- ⏰ decisions on closed-market days
@@ -431,8 +536,8 @@ def closed_day_events(state, today):
     missed = missed_keys(state)
     for t, iso in sorted(evs, key=lambda x: (x[1], x[0])):
         d = datetime.strptime(iso, "%Y-%m-%d").date()
-        if f"{t}:{iso}" in missed:
-            continue          # the FDA already said it will not decide on that day
+        if f"{t}:{iso}" in missed or f"{t}:{iso}" in decided_keys(state):
+            continue          # the FDA already said it will not decide on that day / already decided
         if not trading_day(d) and last_trading_before(d) == today:
             out.append((t, iso))
     return out
@@ -691,7 +796,7 @@ class FdaNewsWatch:
                 changed = True
                 if first:
                     continue
-                changed |= mark_missed(state, t, h["title"], now.date())
+                changed |= mark_news(state, t, h["title"], now.date())
                 loud = bool(FDA_LOUD.search(h["title"]))
                 link = h["link"] if h["link"].startswith(("https:", "http:")) else ""
                 self.send(f"💊{'🚨' if loud else '📰'} <b>${html.escape(t)}</b> FDA news (FDA date {when})\n"
