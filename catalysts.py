@@ -382,6 +382,7 @@ DECIDED_RE = re.compile(
 HYPO_RE = re.compile(r"\b(if|whether|would|could|may|might|expects?|expected|seeks?|seeking|awaits?|awaiting|ahead of|"
                      r"odds|chances?|to decide|decision (due|date|looms)|potential|possible|upcoming|preview|"
                      r"watch|faces?|will the)\b|\?", re.I)
+REJECTED_RE = re.compile(r"complete response|\bCRL\b|declin|refus|reject|turn(s|ed)? (back|down)", re.I)
 DECIDED_WINDOW = (-14, 30)
 SHOCK_WINDOW = (-2, 3)          # FDA date from 2 days ago to 3 days ahead
 SHOCK_PCT = float(os.environ.get("FDA_SHOCK_PCT", "0.15"))
@@ -418,7 +419,7 @@ def mark_decided(state, t, title, today=None, names=None):
         delta = (datetime.strptime(iso, "%Y-%m-%d").date() - today).days
         k = f"{t}:{iso}"
         if DECIDED_WINDOW[0] <= delta <= DECIDED_WINDOW[1] and k not in m:
-            m[k] = {"title": title[:200], "at": today.isoformat()}
+            m[k] = {"title": title[:200], "at": today.isoformat(), "approved": not REJECTED_RE.search(title)}
             changed = True
             log.info("FDA calendar: date marked decided")
     if len(m) > 200:
