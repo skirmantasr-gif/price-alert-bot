@@ -206,11 +206,24 @@ class Sources(unittest.TestCase):
         sc.fetch_wire = lambda: order.append("PRN") or []
         sc.fetch = lambda m: order.append(m[0]) or []
         st = {}
-        for _ in range(4):
-            sc.check(st)
+        with mock.patch.object(c, "MARKET_SECONDS", 0):     # rotation order (spacing tested below)
+            for _ in range(4):
+                sc.check(st)
         self.assertEqual(order[0], "PRN")
         self.assertEqual(order[1], "US")
         self.assertEqual(order[3], c.MARKETS[1][0])
+
+    def test_markets_spaced_out(self):
+        # 2026-11-22 Google budget: one other-market search per MARKET_SECONDS, not one per loop
+        sc, _ = scanner()
+        order = []
+        sc.fetch_wire = lambda: order.append("PRN") or []
+        sc.fetch = lambda m: order.append(m[0]) or []
+        st = {}
+        for _ in range(6):
+            sc.check(st)
+        self.assertEqual(order[:2], ["PRN", "US"])
+        self.assertLessEqual(len(order), 3)
 
     def test_alpaca_pass_every_call_when_on(self):
         sc, _ = scanner()
