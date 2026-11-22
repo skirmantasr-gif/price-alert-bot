@@ -114,6 +114,7 @@ class Mirror:
         self.line = None            # account summary for the report
         self.practice = {}          # tk -> last practice price (for the fill comparison)
         self.posted = set()         # execution ids already posted
+        self.ib_state = None        # st["ib"]: posted ids are written into it right after posting
         self.last_sync = 0.0
         self.thread = None
         self.job = None             # job the worker is running now
@@ -129,6 +130,7 @@ class Mirror:
             if not self.posted and ib.get("posted"):
                 self.posted = set(ib["posted"])
             ib["posted"] = sorted(self.posted)[-300:]
+            self.ib_state = ib
             if self.line:
                 ib["line"] = self.line
         self._watchdog()
@@ -279,6 +281,8 @@ class Mirror:
             if self.send(fill_line(side, tk, qty, avg, self.practice.get(tk)), False) is not False:
                 with self.lock:
                     self.posted.update(f.execution.execId for f in fs)
+                    if self.ib_state is not None:   # saved even if the bot restarts before the next sync
+                        self.ib_state["posted"] = sorted(self.posted)[-300:]
 
     def _account(self, ib):
         tags = {x.tag: x.value for x in ib.accountSummary()}

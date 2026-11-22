@@ -60,6 +60,9 @@ def message(state, now, data, paper=None, learn_names=None):
             v = paper.value(pf, now, data)
             snap[key] = round(v, 2)
             ch = f" ({v - prev[key]:+.2f} this week)" if key in prev else ""
+            if pf.get("topup"):      # 👥: €10 added per cluster when cash runs out → the € change is not a gain
+                ch = (f" ({(v / paper.base(pf) - 1) * 100:+.1f}% on €{paper.START_EUR:.0f} + €{pf['topup']:.0f} "
+                      f"added, so the € change is not profit)")
             wk_closed = [c for c in pf["closed"] if c.get("t", 0) >= week_ago]
             won = sum(1 for c in wk_closed if c["ret"] > 0)
             closed = (f" · {len(wk_closed)} closed this week ({won} won, avg "

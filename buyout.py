@@ -139,7 +139,10 @@ NOT_MAJOR = re.compile(r"(\bForm 4\b|\?\s*$|case for investing|should .{0,60}inv
                        r"\bRSUs?\b|restricted stock|shares withheld|grant conversion|"
                        r"\bdoubles as\b|\bmoves to\b|re-?elects? (the )?(board|directors?)|approves? (the )?auditor|"
                        r"consent (fee|solicitation)|\bresell\b|\bresale\b|"
-                       r"investor alert|hagens berman|\bBFA law\b|shareholder rights|investigation on behalf)", re.I)
+                       r"investor alert|hagens berman|\bBFA law\b|shareholder rights|investigation on behalf|"
+                       # "Obituary: Thomas Harrison, Former CEO of Omnicom's DAS Group" (2026-11-22 noise)
+                       r"\bobituar\w*|\bin memoriam\b|\b(dies|died|passes away|passed away)\b|"
+                       r"\bformer (CEO|CFO|chief \w+ officer|chairman|president)\b)", re.I)
 # An insider buying / selling shares ("CFO Acquires 10,000 Shares", "CFO pays $4.21 a share for 10,000 … shares"):
 # the 👥 insider scan covers these; MAJOR matched them via CFO/acquires → 3 posts for one buy (BW, 2026-11-16)
 INSIDER_TRADE = re.compile(r"\b(CEO|CFO|COO|director|chair\w*|insider|officer|president|EVP|SVP|founder)\b.{0,80}?"

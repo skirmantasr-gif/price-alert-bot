@@ -113,6 +113,19 @@ def base(pf):
     return START_EUR + pf.get("topup", 0.0)
 
 
+def curve(pf):
+    """Equity history as if €100 were put in (top-ups removed): value ÷ money in at that time × €100.
+    Owner 2026-11-22: 11 top-ups made 👥 look like €100 → €227 and the export said −24.6%. Points saved before
+    "eqb" existed: money in ≈ the value then, kept between €100 and today's money in (no fake top or drop)."""
+    eq = pf.get("eq") or []
+    if not pf.get("topup"):
+        return eq
+    eqb = (pf.get("eqb") or [])[-len(eq):] if eq else []
+    n_old = len(eq) - len(eqb)
+    bases = [min(max(START_EUR, v), base(pf)) for v in eq[:n_old]] + eqb
+    return [round(v / b * START_EUR, 3) for v, b in zip(eq, bases)]
+
+
 def exits(key):
     e = {"stop": STOP, "take": TAKE, "trail": (TRAIL_START, TRAIL), "days": None}
     e.update(EXITS.get(key, {}))
@@ -382,6 +395,12 @@ def _put_in(pf):
     return f" on €{START_EUR:.0f} + €{pf['topup']:.0f} added" if pf.get("topup") else ""
 
 
+def _now_val(pf, key, now, data):
+    v = value(pf, now, data)
+    extra = f" ({(v / base(pf) - 1) * 100:+.1f}% on €{base(pf):.0f} put in)" if pf.get("topup") else ""
+    return f"{PORTFOLIOS[key][0].split()[0]} €{v:.2f}{extra}"
+
+
 def _pct(x):
     return f"{x * 100:+.1f}%" if abs(x) >= 0.0005 else "±0.0%"
 
@@ -500,6 +519,10 @@ def snapshot(st, now, data):
         eq = pf.setdefault("eq", [])
         eq.append(round(value(pf, now, data), 3))
         del eq[:-1000]
+        if pf.get("topup") or "eqb" in pf:
+            eqb = pf.setdefault("eqb", [])
+            eqb.append(round(base(pf), 2))
+            del eqb[:-1000]
     bv = _bench(st, now, data)
     if bv:
         be = st.setdefault("bench_eq", [])
@@ -522,8 +545,9 @@ def money_rule(st, now, data):
             continue
         v = value(pf, now, data)
         vs = [x["vs"] for x in pf["closed"] if x.get("vs") is not None]
-        eq = (pf.get("eq") or []) + [v]
-        off_top = v / max([START_EUR] + eq) - 1
+        v100 = v / base(pf) * START_EUR          # as if €100 were put in (top-ups removed)
+        eq = curve(pf) + [v100]
+        off_top = v100 / max([START_EUR] + eq) - 1
         if len(pf["closed"]) >= RULE_TRADES and v > bv and vs and sum(vs) / len(vs) > 0:
             (paused if off_top <= RULE_STOP else ok).append((name.split()[0], len(pf["closed"]), v, off_top))
         if best is None or (len(pf["closed"]), v) > (best[1], best[2]):
@@ -550,7 +574,7 @@ def report(st, now, data, title):
         wait = len(pf.get("pending", {}))
         lines.append(f"{name}: <b>€{v:.2f}</b> ({(v / base(pf) - 1) * 100:+.1f}%{_put_in(pf)}) · {len(pf['open'])} open"
                      + (f" · {wait} waiting for the open" if wait else "") + f" · {len(pf['closed'])} closed"
-                     + (f" ({won} won)" if pf["closed"] else "") + _dd(pf.get("eq")))
+                     + (f" ({won} won)" if pf["closed"] else "") + _dd(curve(pf)))
         if stats(pf):
             lines.append(stats(pf))
     bv = _bench(st, now, data)
@@ -703,9 +727,11 @@ class Tracker:
         """Every buy / sell / cancel is posted right away (with sound), not only in the hourly statement."""
         new = trade_lines(st, st.get("live_posted", st["since"]), short=False)
         new = [(t, x) for t, x in new if not x.startswith("⏳")]  # orders: shown once they fill or are cancelled
+        # ➕ top-ups: only in the hourly statement (owner 2026-11-22: 11 separate "Added €10" posts in one night)
+        new = [(t, x) for t, x in new if not x.startswith("➕")]
         if not new:
             return False
-        vals = " · ".join(f"{PORTFOLIOS[k][0].split()[0]} €{value(st['pf'][k], now, self.data):.2f}" for k in PORTFOLIOS)
+        vals = " · ".join(_now_val(st["pf"][k], k, now, self.data) for k in PORTFOLIOS)
         text = "🧪 <b>Practice trade</b>\n" + "\n".join(x for _, x in new[:10]) + f"\n<i>Now: {vals}</i>"
         if self.send(text, False):
             st["live_posted"] = new[-1][0]
