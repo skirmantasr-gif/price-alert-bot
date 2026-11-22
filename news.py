@@ -455,6 +455,31 @@ def yahoo_news(ticker):
     return out
 
 
+IR_SECONDS = int(os.environ.get("IR_SECONDS", "300"))   # company feeds: every 5 min, every round near an FDA date
+IR_HOT_DAYS = (-3, 3)
+
+
+def ir_news(ticker):
+    """The company's own press releases (watchlist "ir" feed). Its own site: no name matching needed."""
+    out = []
+    for it in _rss_items(_get(watchlist.IR_FEEDS[ticker])):
+        if it["title"] and not JUNK.search(it["title"]):
+            out.append({**it, "source": "Company site"})
+    return out
+
+
+def ir_hot(state, ticker, today=None):
+    """True within IR_HOT_DAYS of one of the stock's FDA dates (then the feed is read every round)."""
+    today = today or datetime.now(timezone.utc).date()
+    try:
+        import catalysts
+        dates = catalysts._fda_dates(state, ticker)
+    except Exception:
+        return False
+    return any(IR_HOT_DAYS[0] <= (datetime.strptime(d, "%Y-%m-%d").date() - today).days <= IR_HOT_DAYS[1]
+               for d in dates)
+
+
 def fda_news(tickers):
     url = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml"
     out = []
@@ -815,9 +840,14 @@ class NewsWatcher:
         do_sa = mono - self.last_sa >= SA_SECONDS
         if do_sa:
             self.last_sa = mono
+        do_ir = mono - getattr(self, "last_ir", float("-inf")) >= IR_SECONDS
+        if do_ir:
+            self.last_ir = mono
         for t in ([] if fast else self.tickers):
             srcs = ([("Google", google_news)] if do_google else []) + [("Yahoo", yahoo_news)] \
                 + ([("SeekingAlpha", seekingalpha_news)] if do_sa else [])
+            if t in watchlist.IR_FEEDS and (do_ir or ir_hot(state, t)):
+                srcs.append(("Company site", ir_news))
             if do_contracts:
                 srcs.append(("Google contracts", google_contracts))
             for name, fn in srcs:
