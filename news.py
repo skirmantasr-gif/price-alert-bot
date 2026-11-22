@@ -520,48 +520,6 @@ def ir_hot(state, ticker, today=None):
                for d in dates)
 
 
-# ---------------------------------------------------------------- X posts from the owner's Mac (read-only reader)
-X_INBOX = os.environ.get("X_INBOX") or os.path.join(
-    os.path.dirname(os.path.abspath(os.environ.get("STATE_FILE", "state.json"))), "x_inbox.jsonl")
-X_MAX_AGE_HOURS = 3
-
-
-def x_news(ns, path=None):
-    """New lines of the X inbox (appended over ssh by the Mac reader): cashtag posts by accounts with 1.5k+
-    followers. The read position is kept in state, so a restart does not re-post. Owner 2026-11-22."""
-    path = path or X_INBOX
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return []
-    off = ns.get("x_off", 0)
-    if size < off:          # file replaced / truncated
-        off = 0
-    if size == off:
-        return []
-    with open(path, "rb") as f:
-        f.seek(off)
-        raw = f.read(2_000_000)
-    end = raw.rfind(b"\n") + 1     # only whole lines; a half-written one waits for the next round
-    ns["x_off"] = off + end
-    out = []
-    for line in raw[:end].decode("utf-8", "replace").splitlines():
-        try:
-            x = json.loads(line)
-            d = datetime.strptime(x["created"], "%a %b %d %H:%M:%S %z %Y")
-        except Exception:
-            continue
-        if x.get("ticker") not in watchlist.TICKERS and x.get("ticker") not in (watchlist.COMPANIES or {}):
-            continue
-        text = re.sub(r"\s+", " ", x.get("text") or "").strip()
-        title = text if len(text) <= 220 else text[:217].rsplit(" ", 1)[0] + "…"
-        fol = x.get("followers") or 0
-        out.append({"title": title, "desc": text, "link": x.get("link", ""), "date": d, "ticker": x["ticker"],
-                    "source": f"X @{x.get('user', '?')} ({fol / 1000:.0f}k)" if fol >= 1000 else f"X @{x.get('user', '?')}",
-                    "x": True})
-    return out
-
-
 def fda_news(tickers):
     url = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml"
     out = []
@@ -963,9 +921,6 @@ class NewsWatcher:
             res, silent = run("PRNewswire", prnewswire_news, self.tickers)
             for it in res:
                 consider(_hash(it["ticker"] + "|" + _norm(it["title"])), {**it, "kind": "news"}, silent)
-            for it in x_news(ns):          # the Mac reader already skips its backlog: no silent first look here
-                if time.time() - it["date"].timestamp() <= X_MAX_AGE_HOURS * 3600:
-                    consider(_hash(it["ticker"] + "|x|" + _norm(it["title"])), {**it, "kind": "news"}, False)
 
         if stale:
             log.info("News: %d stale headline(s) skipped (published > %.0fh before first seen)", stale, NEWS_MAX_AGE_HOURS)
@@ -1046,7 +1001,7 @@ class NewsWatcher:
                     msg += "\n" + "\n".join(ctx)
             except Exception:
                 pass
-            if not (self.send(msg, True) if it.get("x") else self.send(msg)):   # X posts: quiet
+            if not self.send(msg):
                 log.warning("News: Telegram send failed, will retry next poll")
                 break
             self.queue.pop(0)

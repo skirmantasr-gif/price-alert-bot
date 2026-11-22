@@ -241,14 +241,69 @@ def telegram_call(method, params, chat=None):
     return False
 
 
+TG_LIMIT = 3900   # Telegram allows 4096 characters; HTML tags and entities count in the raw text, so keep margin
+_TAG = re.compile(r"<(/?)(b|i|u|s|code|pre|blockquote)\b[^>]*>", re.I)
+
+
+def split_message(text, limit=None):
+    """Parts of at most `limit` characters, cut at line ends; <b>/<pre>/… still open at a cut are closed there and
+    reopened in the next part. Owner 2026-11-22: 3 messages on Nov 20 were lost ("message is too long")."""
+    limit = limit or TG_LIMIT
+    if len(text) <= limit:
+        return [text]
+    parts, cur, stack = [], "", []
+
+    def close(st):
+        return "".join(f"</{t[0]}>" for t in reversed(st))
+
+    def reopen(st):
+        return "".join(t[1] for t in st)
+    for line in text.split("\n"):
+        while len(line) > limit - 200:              # one huge line: hard cut
+            head, line = line[:limit - 200], line[limit - 200:]
+            if cur:
+                parts.append(cur + close(stack))
+                cur = reopen(stack)
+            parts.append(cur + head + close(stack))
+            cur = reopen(stack)
+        add = (line if not cur or cur == reopen(stack) else "\n" + line)
+        if len(cur) + len(add) + len(close(stack)) > limit and cur:
+            parts.append(cur + close(stack))
+            cur = reopen(stack) + line
+        else:
+            cur += add
+        for m in _TAG.finditer(line):
+            name = m.group(2).lower()
+            if m.group(1):
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i][0] == name:
+                        del stack[i]
+                        break
+            else:
+                stack.append((name, m.group(0)))
+    if cur and cur != reopen(stack):
+        parts.append(cur)
+    return parts
+
+
 def send_telegram(text, silent=None, chat=None):
     """silent=None: decide from the message type (routine news / filings arrive without sound)."""
     if silent is None:
         silent = extras.is_quiet(text)
-    params = {"text": text, "parse_mode": "HTML", "disable_web_page_preview": "true"}
-    if silent:
-        params["disable_notification"] = "true"
-    return telegram_call("sendMessage", params, chat)
+    parts = split_message(text)
+    first = None
+    for i, part in enumerate(parts):
+        params = {"text": part, "parse_mode": "HTML", "disable_web_page_preview": "true"}
+        if silent or i:                # follow-up parts never ring again
+            params["disable_notification"] = "true"
+        r = telegram_call("sendMessage", params, chat)
+        if i == 0:
+            first = r
+            if not r:
+                return r               # nothing went out: the caller may retry the whole message
+        elif not r:
+            log.warning("Telegram: part %d of %d not sent", i + 1, len(parts))
+    return first
 
 
 def send_photo(url, chat=None):
