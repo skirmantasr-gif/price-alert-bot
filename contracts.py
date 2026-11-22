@@ -132,7 +132,9 @@ SHARED_RE = re.compile(r"(multiple[- ]award|multi[- ]award|several (companies|ve
 NOT_WINNER_RE = re.compile(r"(\bprivate(ly[- ]held)? (firm|company|business)\b|\bnot (publicly )?listed\b|\bunlisted\b|"
                            r"\bunrelated to\b|\bno relation\b|\bnot affiliated\b)", re.I)
 WIRE_SECONDS = int(os.environ.get("CONTRACT_WIRE_SECONDS", "120"))   # PR Newswire live feed
-US_SECONDS = int(os.environ.get("CONTRACT_US_SECONDS", "300"))       # US Google News search
+US_SECONDS = int(os.environ.get("CONTRACT_US_SECONDS", "600"))       # US Google News search (was 300)
+# other markets: one Google search every MARKET_SECONDS (was every loop ≈ 1 min; 2026-11-22 Google budget)
+MARKET_SECONDS = int(os.environ.get("CONTRACT_MARKET_SECONDS", "240"))
 # USAspending.gov: every NEW US federal contract award (any company), official data. Civilian agencies appear ~2-5
 # days after signing, the Defense Department only after a 90-day delay. Searched with no company list (a long name
 # list gets HTTP 503). Winners are matched to US-listed stocks (= on IBKR, Trading 212 and Revolut).
@@ -765,14 +767,17 @@ class ContractScanner:
             self.last_us = mono
             market, label = MARKETS[0], "US"
             fetch = lambda: self.fetch(MARKETS[0])
-        else:
+        elif mono - getattr(self, "last_market", float("-inf")) >= MARKET_SECONDS:
+            self.last_market = mono
             market = SCAN_MARKETS[self.turn % len(SCAN_MARKETS)]
             self.turn += 1
             label = market[0]
             fetch = lambda: self.fetch(market)
             if label == "US":
                 self.last_us = mono
-        changed = self._scan(label, fetch, seen, init, sent)
+        else:
+            label = fetch = None
+        changed = self._scan(label, fetch, seen, init, sent) if fetch else False
         if alpaca.ON:  # Benzinga real-time news (incl. all newswires), every call (~1 min)
             changed |= self._scan("Alpaca", self.fetch_alpaca, seen, init, sent)
         if mono - self.last_ex >= EXCHANGE_SECONDS:  # official exchange announcements

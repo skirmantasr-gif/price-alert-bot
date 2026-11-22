@@ -744,10 +744,40 @@ def check(ticker, state, errors, volume=None):
             state[ticker] = {"ref": price, "ref_time": datetime.now(timezone.utc).isoformat()}
             extras.bump(state, "price")
             if scoreboard:
-                scoreboard.note("price", ticker, "up" if up else "down", price, state=state)
+                scoreboard.note("price", ticker, "up" if up else "down", price, state=state,
+                                ctx={"session": session, "step": round(step * 100, 2), "move": round(change * 100, 2)})
             log.info("Price alert sent")
             return True
     return changed
+
+
+def alert_context(ticker):
+    """Facts for the scoreboard history (owner 2026-11-22): day move, volume vs normal, session, size."""
+    f = {}
+    ch = LAST_CHART.get(ticker)
+    if ch:
+        try:
+            meta = ch["meta"]
+            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            q = (ch.get("indicators", {}).get("quote") or [{}])[0]
+            closes = [c for c in q.get("close") or [] if c is not None]
+            vols = [v for v in q.get("volume") or [] if v]
+            if prev and closes:
+                f["day"] = round((closes[-1] / prev - 1) * 100, 2)
+                f["price"] = round(closes[-1], 4)
+            if vols:
+                f["vol_today"] = int(sum(vols))
+        except Exception:
+            pass
+    try:
+        import movers
+        cap = movers.market_cap(ticker)
+        if cap:
+            f["cap_m"] = round(cap / 1e6, 1)
+    except Exception:
+        pass
+    f["watch"] = ticker in THRESHOLDS
+    return f
 
 
 def stop_handler(state, save=None):
@@ -920,7 +950,7 @@ def main():
                  if weekly and HEARTBEAT_ROLE != "phone" and weekly.WeeklyReview.enabled() else None)
     board = None
     if scoreboard and HEARTBEAT_ROLE != "phone" and scoreboard.Board.enabled():
-        scoreboard.attach(state, lambda tk: fetch_price(tk)[0])
+        scoreboard.attach(state, lambda tk: fetch_price(tk)[0], alert_context)
         try:
             import learn as _learn
             board = scoreboard.Board(lambda tk: _learn._closes(http_get_json, tk), send_telegram)

@@ -49,12 +49,46 @@ NAMES = {
 
 STATE = None        # set by attach(); alerts are noted without passing the state around
 PRICE = None        # PRICE(ticker) -> latest price or None (set by bot.py)
+CONTEXT = None      # CONTEXT(ticker) -> {"day": …, "cap": …} facts at alert time (set by bot.py)
+# Owner 2026-11-22 ("3. do"): a trust model needs each alert's context, and more than 70 days of it. Every alert
+# now carries "f" (facts known at alert time) and, once its 5-day result is in, is appended to HISTORY for good.
+HISTORY = os.environ.get("ALERT_HISTORY") or os.path.join(
+    os.path.dirname(os.path.abspath(os.environ.get("STATE_FILE", "state.json"))), "alerts_history.jsonl")
 _spy = [0.0, None]  # (time, price) cache
 
 
-def attach(state, price_fn):
-    global STATE, PRICE
+def attach(state, price_fn, context_fn=None):
+    global STATE, PRICE, CONTEXT
     STATE, PRICE = state, price_fn
+    if context_fn:
+        CONTEXT = context_fn
+
+
+def facts(ticker, state, now, ctx=None):
+    """What was known when the alert went out. Every part is optional; failures just leave it out."""
+    f = {}
+    try:
+        from zoneinfo import ZoneInfo
+        ny = datetime.fromtimestamp(now, ZoneInfo("America/New_York"))
+        f["hour_ny"] = round(ny.hour + ny.minute / 60, 2)
+        f["wday"] = ny.weekday()
+    except Exception:
+        pass
+    try:
+        m = (state.get("_mood") or {}).get("m") or {}
+        if m.get("status"):
+            f["mood"] = m["status"]
+        if isinstance(m.get("score"), (int, float)):
+            f["mood_score"] = m["score"]
+    except Exception:
+        pass
+    if CONTEXT:
+        try:
+            f.update({k: v for k, v in (CONTEXT(ticker) or {}).items() if v is not None})
+        except Exception:
+            pass
+    f.update({k: v for k, v in (ctx or {}).items() if v is not None})
+    return f
 
 
 def _sb(state):
@@ -73,7 +107,7 @@ def _spy_now():
     return p
 
 
-def note(kind, ticker, direction, price=None, state=None, now=None):
+def note(kind, ticker, direction, price=None, state=None, now=None, ctx=None):
     """Remember one alert. direction 'up' or 'down'. Never raises (scoring must not break alerts)."""
     try:
         state = state if state is not None else STATE
@@ -95,7 +129,7 @@ def note(kind, ticker, direction, price=None, state=None, now=None):
             del seen[k]
         ev = sb.setdefault("ev", [])
         ev.append({"t": int(now), "k": kind, "tk": ticker, "d": direction, "p0": round(float(price), 4),
-                   "b0": _spy_now()})
+                   "b0": _spy_now(), "f": facts(ticker, state, now, ctx)})
         cut = now - KEEP_DAYS * 86400
         ev[:] = [e for e in ev if e["t"] >= cut][-MAX_EV:]
         return True
@@ -126,6 +160,10 @@ def _bench_on(bclose, d):
 
 def evaluate(state, closes_fn, now=None):
     """closes_fn(ticker) -> (closes [(date, close)], tz, (close h, m)) — learn._closes. Returns # filled."""
+    if not os.path.exists(HISTORY):      # first run: keep the alerts already finished (no facts yet)
+        for e in _sb(state).get("ev", []):
+            if "x5" in e:
+                archive(e)
     ev = [e for e in _sb(state).get("ev", []) if "x5" not in e]
     if not ev:
         return 0
@@ -158,7 +196,19 @@ def evaluate(state, closes_fn, now=None):
                 e[rk] = round(sign * r, 2)
                 e[xk] = round(sign * (r - (b / b0 - 1) * 100), 2)
                 done += 1
+                if xk == "x5":
+                    archive(e)
     return done
+
+
+def archive(e, path=None):
+    """Append a finished alert (with its facts and results) to the permanent history (training data)."""
+    try:
+        import json
+        with open(path or HISTORY, "a") as fh:
+            fh.write(json.dumps(e, separators=(",", ":")) + "\n")
+    except Exception as ex:
+        log.warning("Scoreboard: history write failed (%s)", type(ex).__name__)
 
 
 # ---------------------------------------------------------------- verdicts + report

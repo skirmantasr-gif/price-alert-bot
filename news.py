@@ -61,7 +61,7 @@ COMPANIES = watchlist.COMPANIES
 GOV_NAMES = watchlist.GOV_NAMES
 CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))   # 🚨 + UP push at/above this
 GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "900"))  # was 300; server's fixed IP got HTTP 429 (2026-11-16)  # Google blocks too-frequent automated searches
-CONTRACT_SEARCH_SECONDS = 900     # extra "contract / awarded" Google News search per ticker
+CONTRACT_SEARCH_SECONDS = int(os.environ.get("CONTRACT_SEARCH_SECONDS", "7200"))  # was 900 (2026-11-22 Google budget)
 # Off by default since 2026-11-17: it doubled the Google searches (Google rate-limits the server IP) and
 # contracts.py already scans every new federal award. GOOGLE_CONTRACTS=true turns it back on.
 GOOGLE_CONTRACTS = os.environ.get("GOOGLE_CONTRACTS", "").strip().lower() == "true"
@@ -458,6 +458,45 @@ def yahoo_news(ticker):
 
 IR_SECONDS = int(os.environ.get("IR_SECONDS", "300"))   # company feeds: every 5 min, every round near an FDA date
 IR_HOT_DAYS = (-3, 3)
+
+
+# Google budget (owner 2026-11-22, "5. do"): ~270 Google searches/h got the server blocked most of the day. Stocks with
+# news due (from 7 days before an FDA date to 3 after; earnings 2 days before to 1 after) are searched every Google round; the others take turns,
+# GOOGLE_COLD_PER_ROUND per round (each about every 2 h with 17 stocks). Yahoo / SeekingAlpha / SEC / Alpaca still
+# cover every stock every minute.
+GOOGLE_COLD_PER_ROUND = int(os.environ.get("GOOGLE_COLD_PER_ROUND", "2"))
+HOT_FDA, HOT_EARN = (-3, 7), (-1, 2)     # (days after, days before) as date − today
+
+
+def google_hot(state, ticker, today=None):
+    today = today or datetime.now(timezone.utc).date()
+    dates = []
+    try:
+        import catalysts
+        dates += [("fda", d) for d in catalysts._fda_dates(state, ticker)]
+    except Exception:
+        pass
+    dates += [(kind, iso) for t, iso, kind, _ in (state.get("_cal") or []) if t == ticker and kind == "earnings"]
+    for kind, iso in dates:
+        try:
+            delta = (datetime.strptime(iso, "%Y-%m-%d").date() - today).days
+        except ValueError:
+            continue
+        lo, hi = HOT_FDA if kind == "fda" else HOT_EARN
+        if lo <= delta <= hi:
+            return True
+    return False
+
+
+def google_targets(state, tickers, turn):
+    """Tickers that get a Google News search this round."""
+    hot = [t for t in tickers if google_hot(state, t)]
+    cold = [t for t in tickers if t not in hot]
+    if not cold:
+        return set(hot)
+    k = min(GOOGLE_COLD_PER_ROUND, len(cold))
+    start = (turn * k) % len(cold)
+    return set(hot) | {cold[(start + i) % len(cold)] for i in range(k)}
 
 
 def ir_news(ticker):
@@ -871,8 +910,11 @@ class NewsWatcher:
         do_contracts = GOOGLE_CONTRACTS and mono - self.last_contract_search >= CONTRACT_SEARCH_SECONDS
         do_usa = USASPENDING_ON and mono - self.last_usaspending >= USASPENDING_SECONDS
         do_google = mono - self.last_google >= GOOGLE_SECONDS
+        g_targets = set()
         if do_google:
             self.last_google = mono
+            self.g_turn = getattr(self, "g_turn", -1) + 1
+            g_targets = google_targets(state, self.tickers, self.g_turn)
         if do_contracts:
             self.last_contract_search = mono
         if do_usa:
@@ -887,7 +929,7 @@ class NewsWatcher:
         if do_ir:
             self.last_ir = mono
         for t in ([] if fast else self.tickers):
-            srcs = ([("Google", google_news)] if do_google else []) + [("Yahoo", yahoo_news)] \
+            srcs = ([("Google", google_news)] if t in g_targets else []) + [("Yahoo", yahoo_news)] \
                 + ([("SeekingAlpha", seekingalpha_news)] if do_sa else [])
             if t in watchlist.IR_FEEDS and (do_ir or ir_hot(state, t)):
                 srcs.append(("Company site", ir_news))

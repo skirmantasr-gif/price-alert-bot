@@ -210,6 +210,39 @@ def ai_enabled():
     return bool(API_KEY) and not _ai_disabled
 
 
+# Owner 2026-11-22 ("4. do"): the 🎓 review had AI news calls right 36% of the time over 30 days; low-confidence ones
+# 40% with −1.8% edge. A 📈/📉 call now needs a NAMED event in the headline / snippet, and low confidence = neutral.
+# Analyst rating / target changes are not events here: the Nov 16 study (12k calls) found no edge after them.
+CATALYST = re.compile(
+    r"\b(FDA|PDUFA|EMA|approv\w*|complete response|CRL|clinical hold|trial|topline|top-line|endpoint|phase [123]|"
+    r"data readout|earnings|results|revenue|EPS|quarter(ly)?|Q[1-4]|guidance|outlook|forecast|"
+    r"offering|private placement|ATM program|convertible|notes due|reverse split|"
+    r"acquir\w*|acquisition|merger|merge[sd]?|buyout|takeover|tender offer|go-private|strategic (review|alternatives)|"
+    r"partnership|collaboration|licens\w+|contract|award(ed)?|order(s)? (worth|for|from)|"
+    r"bankrupt\w*|chapter 11|going concern|delist\w*|default|recall\w*|halt(ed|s)?|"
+    r"lawsuit|verdict|settlement|subpoena|investigation|fraud|short (report|seller)|"
+    r"buyback|repurchase|dividend|CEO|CFO|resign\w*|steps down|layoffs?|restructur\w+)\b", re.I)
+ANALYST = re.compile(r"\b(upgrade[sd]?|downgrade[sd]?|price target|PT (raised|cut|lowered)|initiat\w+ coverage|"
+                     r"reiterat\w+|rating (lowered|raised|cut)|(buy|sell|hold|outperform|underperform|overweight|"
+                     r"underweight) rating|stock rating)\b", re.I)
+
+
+def needs_event(it, d, conf):
+    """(direction, why) after the 2026-11-22 rules; why = '' when unchanged."""
+    if d == "neutral":
+        return d, ""
+    if conf == "low":
+        return "neutral", "low confidence"
+    text = it["title"] + " " + (it.get("desc") or "")[:300]
+    if it.get("contract"):
+        return d, ""
+    if ANALYST.search(it["title"]) and not CATALYST.search(ANALYST.sub(" ", it["title"])):
+        return "neutral", "analyst rating change"
+    if not CATALYST.search(text):
+        return "neutral", "no named event"
+    return d, ""
+
+
 def _ai(items, companies):
     """items: list of news dicts. Returns {index: (dir, conf, reason)} or raises."""
     global _client
@@ -247,7 +280,10 @@ def _ai(items, companies):
             conf = _guard(it, r["direction"], r["confidence"])
             if conf != r["confidence"]:
                 log.info("AI impact: high → medium (no keyword confirmation or wire/unknown source)")
-            out[r["id"]] = (r["direction"], conf, _clean_reason(r["reason"]))
+            d, why = needs_event(it, r["direction"], conf)
+            if why:
+                log.info("AI impact: %s → neutral (%s)", r["direction"], why)
+            out[r["id"]] = (d, conf, _clean_reason(r["reason"]) if d != "neutral" else "")
             it["repeat"] = bool(r.get("repeat")) and bool(it.get("earlier"))  # needs something to repeat
             it["old_event"] = bool(r.get("old_event"))
             it["not_about"] = bool(r.get("not_about"))

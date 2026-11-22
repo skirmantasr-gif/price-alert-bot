@@ -86,7 +86,7 @@ def record(state, src, ticker, direction, conf, by, text="", price=None):
         paper.record(lst[-1])
     try:
         import scoreboard
-        scoreboard.note(src, ticker, direction, p0, state=state)
+        scoreboard.note(src, ticker, direction, p0, state=state, ctx={"conf": conf, "by": by})
     except Exception:
         pass
     cut = time.time() - KEEP_DAYS * 86400
