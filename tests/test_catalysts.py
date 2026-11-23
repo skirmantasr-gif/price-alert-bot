@@ -186,7 +186,11 @@ class ClosedDay(unittest.TestCase):
         st = self.state()
         st["_fdacal"]["list_week"] = "2026-W47"
         st["_fdacal"]["listed_once"] = True
-        with mock.patch.object(c.extras, "local_now", lambda: when):
+        class FixedDate(c.date):          # past FDA dates are pruned with date.today(): pin it to the test day
+            @classmethod
+            def today(cls):
+                return when.date()
+        with mock.patch.object(c.extras, "local_now", lambda: when), mock.patch.object(c, "date", FixedDate):
             cal.check(st)
             cal.check(st)
         return sent
