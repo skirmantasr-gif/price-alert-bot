@@ -143,8 +143,20 @@ INSIDER_WHAT = re.compile(r"\b(shares?|stock|stake|ADS|ADRs?)\b", re.I)
 F4_DAYS = 21
 
 
-def f4_record(ns, ticker, ins, ts=None):
+F4_LOOKUP_MAX = 12          # Form 4s read on demand per lookup
+F4_LOOKUP_GAP = 600         # seconds between on-demand lookups of the same ticker
+_F4_LOOKED = {}
+
+
+def is_insider_buy_head(title):
+    return bool(INSIDER_BUY_HEAD.search(title or "") and INSIDER_WHO.search(title or "")
+                and INSIDER_WHAT.search(title or ""))
+
+
+def f4_record(ns, ticker, ins, ts=None, acc=None):
     """Remember a parsed Form 4 (owner name words, open-market buy $, codes) for the headline check."""
+    if acc:
+        ns["f4acc"] = (ns.get("f4acc", []) + [acc])[-500:]
     if not ins or ins.get("type") != "4":
         return False
     buy = sum(x["value"] for x in ins["tx"] if x["code"] == "P" and not x["deriv"])
@@ -159,8 +171,7 @@ def f4_check(ns, it, now=None):
     """('buy', $) / ('grant', codes) when an insider-buy headline names someone whose recent Form 4 the bot read;
     None when it is not such a headline or no matching filing is known."""
     title = it.get("title") or ""
-    if it.get("kind") != "news" or not (INSIDER_BUY_HEAD.search(title) and INSIDER_WHO.search(title)
-                                        and INSIDER_WHAT.search(title)):
+    if it.get("kind") != "news" or not is_insider_buy_head(title):
         return None
     low = set(w.lower() for w in re.findall(r"[^\W\d_]{3,}", title))
     since = (now or time.time()) - F4_DAYS * 86400
@@ -169,6 +180,27 @@ def f4_check(ns, it, now=None):
         return None
     buy = sum(r[3] for r in recs)
     return ("buy", buy) if buy > 0 else ("grant", "".join(sorted(set("".join(r[4] for r in recs)))))
+
+
+def f4_lookup(ns, ticker, list_fn=None, doc_fn=None, now=None):
+    """An insider-buy headline names someone the bot has no Form 4 for (filed before the bot read filings, or
+    skipped as backlog): read that ticker's recent Form 4s from SEC now. Returns how many were read."""
+    now = now or time.time()
+    if now - _F4_LOOKED.get(ticker, float("-inf")) < F4_LOOKUP_GAP:
+        return 0
+    _F4_LOOKED[ticker] = now
+    done = set(ns.get("f4acc", []))
+    n = 0
+    for f in (list_fn or sec_filings)(ticker):
+        d = f.get("date")
+        if f["form"].upper().split("/")[0] != "4" or f["acc"] in done or (d and d.timestamp() < now - F4_DAYS * 86400):
+            continue
+        if n >= F4_LOOKUP_MAX:
+            break
+        ins = (doc_fn or insider_details)({**f, "ticker": ticker})
+        f4_record(ns, ticker, ins, ts=d.timestamp() if d else now, acc=f["acc"])
+        n += 1
+    return n
 
 
 FORM_NAMES = {
@@ -993,7 +1025,8 @@ class NewsWatcher:
                 it["earlier"] = _recent(ns, it["ticker"])[-12:]
             if it["kind"] == "sec" and "insider" not in it:
                 it["insider"] = self._fetch("SEC EDGAR insider", insider_details, it)
-                changed |= f4_record(ns, it["ticker"], it["insider"])
+                changed |= f4_record(ns, it["ticker"], it["insider"],
+                                     ts=it["date"].timestamp() if it.get("date") else None, acc=it.get("acc"))
             if it["kind"] == "sec" and "reorg" not in it and SEC_CONTACT:
                 it["reorg"] = sec_reorg(it)
             if it["kind"] == "sec" and "activist" not in it:
@@ -1011,6 +1044,10 @@ class NewsWatcher:
         for it in batch:   # after the Form 4s above: is an "insider buys" headline really a purchase?
             if it["kind"] == "news" and "f4" not in it:
                 it["f4"] = f4_check(ns, it)
+                if it["f4"] is None and SEC_CONTACT and is_insider_buy_head(it["title"]):
+                    if self._fetch("SEC EDGAR insider lookup", f4_lookup, ns, it["ticker"]):
+                        changed = True
+                        it["f4"] = f4_check(ns, it)
                 if it["f4"] and it["f4"][0] == "grant":
                     it["impact"] = ("neutral", "low", "SEC filing shows a share grant, not a purchase", "rules")
         try:
