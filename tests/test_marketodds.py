@@ -87,5 +87,30 @@ class Flow(unittest.TestCase):
         self.assertIs(mo.outcome(self.st, "SVRA:2026-11-22", []), False)
 
 
+class AllCalendarStocks(unittest.TestCase):
+    """2026-11-23: FDA-calendar stocks outside the watchlist get estimates too; large caps are skipped."""
+    def setUp(self):
+        self.sent = []
+        rec = dict(CAPR)
+        self.st = {"_opth": {"PYPD:2026-11-22": dict(rec, t="PYPD"), "VRTX:2026-11-22": dict(rec, t="VRTX")},
+                   "_fdacal": {"ev": {}, "docs": []}}
+        caps = {"PYPD": 0.4e9, "VRTX": 110e9}
+        self.w = mo.MarketOdds(lambda text, silent: self.sent.append(text), ["CAPR"], cash=lambda t: 2.0,
+                               preds=lambda: [], now=lambda: datetime(2026, 11, 21, 12, 0), cap=caps.get)
+
+    def test_non_watchlist_estimated_large_cap_skipped(self):
+        self.w.check(self.st)
+        mk = self.st["_mkt"]
+        self.assertIn("p", mk["PYPD:2026-11-22"])
+        self.assertEqual(mk["VRTX:2026-11-22"]["skip"], "market cap $110B")
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("$PYPD", self.sent[0])
+        self.st["_fdacal"]["decided"] = {"VRTX:2026-11-22": {"approved": True, "at": "2026-11-22"}}
+        self.w.last = float("-inf")
+        self.w.check(self.st)                                            # skipped entry never scored / posted
+        self.assertEqual(len(self.sent), 1)
+        self.assertNotIn("outcome", mk["VRTX:2026-11-22"])
+
+
 if __name__ == "__main__":
     unittest.main()
