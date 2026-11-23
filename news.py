@@ -134,6 +134,43 @@ EXEC = re.compile(r"\b(CEO|CFO|chief executive|chief financial)\b", re.I)
 # Market-wide lists ("… and other big stocks moving lower") tag many symbols; skip unless the title names the company
 ROUNDUP_SYMBOLS = 4
 
+# "CFO Niclas Neglen Purchases 22,102 Shares" — news sites often call a share GRANT a purchase (2026-11-23, KLAR:
+# the Form 4s were all code A = award). Such headlines are checked against the Form 4s the bot itself read.
+INSIDER_BUY_HEAD = re.compile(r"\b(buys?|bought|purchas\w*|acquires?|acquired|picks? up|adds?)\b", re.I)
+INSIDER_WHO = re.compile(r"\b(insiders?|CEO|CFO|COO|CTO|CMO|CCO|chief \w+( \w+)? officer|director|chair\w*|president|"
+                         r"founder|officer|executive|EVP|SVP|VP)\b", re.I)
+INSIDER_WHAT = re.compile(r"\b(shares?|stock|stake|ADS|ADRs?)\b", re.I)
+F4_DAYS = 21
+
+
+def f4_record(ns, ticker, ins, ts=None):
+    """Remember a parsed Form 4 (owner name words, open-market buy $, codes) for the headline check."""
+    if not ins or ins.get("type") != "4":
+        return False
+    buy = sum(x["value"] for x in ins["tx"] if x["code"] == "P" and not x["deriv"])
+    words = sorted({w.lower() for o in ins["owners"] for w in re.findall(r"[^\W\d_]{3,}", o or "")})
+    rec = [ticker, int(ts or time.time()), words, round(buy), "".join(sorted({x["code"] for x in ins["tx"]}))]
+    keep = int(time.time()) - 30 * 86400
+    ns["f4"] = [r for r in ns.get("f4", []) if r[1] >= keep][-299:] + [rec]
+    return True
+
+
+def f4_check(ns, it, now=None):
+    """('buy', $) / ('grant', codes) when an insider-buy headline names someone whose recent Form 4 the bot read;
+    None when it is not such a headline or no matching filing is known."""
+    title = it.get("title") or ""
+    if it.get("kind") != "news" or not (INSIDER_BUY_HEAD.search(title) and INSIDER_WHO.search(title)
+                                        and INSIDER_WHAT.search(title)):
+        return None
+    low = set(w.lower() for w in re.findall(r"[^\W\d_]{3,}", title))
+    since = (now or time.time()) - F4_DAYS * 86400
+    recs = [r for r in ns.get("f4", []) if r[0] == it.get("ticker") and r[1] >= since and set(r[2]) & low]
+    if not recs:
+        return None
+    buy = sum(r[3] for r in recs)
+    return ("buy", buy) if buy > 0 else ("grant", "".join(sorted(set("".join(r[4] for r in recs)))))
+
+
 FORM_NAMES = {
     "8-K": "8-K (material event)", "6-K": "6-K (foreign issuer report)", "10-Q": "10-Q (quarterly report)",
     "10-K": "10-K (annual report)", "20-F": "20-F (annual report)", "4": "Form 4 (insider trade)",
@@ -956,6 +993,7 @@ class NewsWatcher:
                 it["earlier"] = _recent(ns, it["ticker"])[-12:]
             if it["kind"] == "sec" and "insider" not in it:
                 it["insider"] = self._fetch("SEC EDGAR insider", insider_details, it)
+                changed |= f4_record(ns, it["ticker"], it["insider"])
             if it["kind"] == "sec" and "reorg" not in it and SEC_CONTACT:
                 it["reorg"] = sec_reorg(it)
             if it["kind"] == "sec" and "activist" not in it:
@@ -970,6 +1008,11 @@ class NewsWatcher:
                     it["ai_sum"] = filings.summarize(it, (COMPANIES.get(it["ticker"], {}).get("match") or [it["ticker"]])[0])
                 except Exception:
                     it["ai_sum"] = None
+        for it in batch:   # after the Form 4s above: is an "insider buys" headline really a purchase?
+            if it["kind"] == "news" and "f4" not in it:
+                it["f4"] = f4_check(ns, it)
+                if it["f4"] and it["f4"][0] == "grant":
+                    it["impact"] = ("neutral", "low", "SEC filing shows a share grant, not a purchase", "rules")
         try:
             impact.assign(batch, {t: (COMPANIES.get(t, {}).get("match") or [t])[0] for t in self.tickers}, self.send)
         except Exception as e:
@@ -1110,10 +1153,17 @@ class NewsWatcher:
         loud = IMPORTANT.search(it["title"]) and not PREVIEW.search(it["title"]) and not it.get("minor") \
             and not LAWFIRM.search(it["title"]) \
             and not (MINOR.search(it["title"]) and not EXEC.search(it["title"]) and not STRONG.search(it["title"]))
+        f4 = it.get("f4")
+        if f4 and f4[0] == "grant":
+            loud = False      # a grant reported as a "purchase": no 🚨
         icon = ("🚨" if big or loud else "📰") + ("🏛️" if c is not None else "")
         srcs = it.get("sources") or [it.get("source", "")]
         src = html.escape(srcs[0]) + (f" +{len(srcs) - 1} more" if len(srcs) > 1 else "")
         extra = ""
+        if f4 and f4[0] == "grant":
+            extra += "🧾 SEC filing (Form 4) shows a share <b>grant</b> / award, not a purchase with own money\n"
+        elif f4:
+            extra += f"🧾 SEC filing confirms an open-market purchase ({impact.money(f4[1])})\n"
         if c is not None:
             extra = f"🏛️ Contract win: <b>{impact.money(c)}</b>\n" if c else "🏛️ Contract news (amount not in headline)\n"
         d = it.get("date")
