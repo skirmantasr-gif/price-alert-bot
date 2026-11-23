@@ -1,7 +1,7 @@
 """📈 Market-implied FDA approval odds, scored next to Claude's (owner 2026-11-22: "7 do").
 
 Why: on SLS and CAPR the market's pricing beat Claude's own odds. To learn whose numbers deserve trust, every
-watchlist FDA date gets a market estimate made from the 📼 options snapshots (options.HistoryWatch, state _opth)
+FDA date (watchlist + 💊 calendar stocks under CAP_MAX, since 2026-11-23) gets a market estimate made from the 📼 options snapshots (options.HistoryWatch, state _opth)
 and is scored like Claude's forecasts once the outcome is known.
 
 Model (rough, said so in every post): two outcomes and no drift.
@@ -35,6 +35,7 @@ CHECK_SECONDS = 3600
 FLOOR = 0.25          # rejected stocks rarely trade below a quarter of the pre-decision price unless cash says so
 D_MIN, D_MAX = 0.30, 0.85
 P_MIN, P_MAX = 0.05, 0.95
+CAP_MAX = 10e9        # above this the drug is only part of the company's value: the two-outcome model doesn't fit
 RESOLVE_AFTER_DAYS = 14   # no decision / miss seen 14 days after the date → left open (shown as "no result")
 
 
@@ -116,9 +117,20 @@ def brier(rows, k):
     return statistics.mean((r[k] - (1.0 if r["outcome"] else 0.0)) ** 2 for r in rows) if rows else None
 
 
+def _cap(t):
+    try:
+        import context
+        return context.market_cap(t)
+    except Exception:
+        return None
+
+
 class MarketOdds:
-    def __init__(self, send, tickers, cash=cash_per_share, preds=None, now=None):
-        self.send, self.tickers, self.cash = send, set(tickers), cash
+    """Every FDA date in _opth (watchlist AND the other US stocks of the 💊 calendar, owner 2026-11-23: "3. proceed"),
+    except companies over CAP_MAX (VRTX-type: a rejection barely moves them, so the straddle says little)."""
+
+    def __init__(self, send, tickers, cash=cash_per_share, preds=None, now=None, cap=_cap):
+        self.send, self.tickers, self.cash, self.cap = send, set(tickers), cash, cap
         self.preds = preds or (lambda: __import__("predict").load())
         self.now = now or extras.local_now
         self.last = float("-inf")
@@ -136,11 +148,17 @@ class MarketOdds:
         preds = self.preds() or []
         changed = False
         for key, rec in (state.get("_opth") or {}).items():
-            if rec.get("kind") != "fda" or rec["t"] not in self.tickers or key in mk:
+            if rec.get("kind") != "fda" or key in mk:
                 continue
             # estimate on the last day before the date (or once the date passed: from what was saved before)
             ev = datetime.strptime(rec["event"], "%Y-%m-%d").date()
             if today < (ev - timedelta(days=1)).isoformat():
+                continue
+            cap = self.cap(rec["t"]) if self.cap else None
+            if cap and cap > CAP_MAX:
+                mk[key] = {"t": rec["t"], "event": rec["event"], "skip": f"market cap ${cap / 1e9:.0f}B"}
+                changed = True
+                log.info("Market odds: skipped (large cap)")
                 continue
             got = pick(rec, _cutoff(state, key))
             if not got:
@@ -159,6 +177,8 @@ class MarketOdds:
                       f"next to Claude's 🎯 odds.", True)
         rows = []
         for key, r in mk.items():
+            if r.get("skip"):
+                continue
             if "outcome" not in r:
                 o = outcome(state, key, preds)
                 if o is None:
@@ -176,7 +196,7 @@ class MarketOdds:
 
     @staticmethod
     def summary(mk):
-        done = [r for r in mk.values() if "outcome" in r]
+        done = [r for r in mk.values() if "outcome" in r and not r.get("skip")]
         both = [r for r in done if r.get("claude") is not None]
         line = f"<i>Running: market Brier {brier(done, 'p'):.2f} on {len(done)} FDA date(s)"
         if both:

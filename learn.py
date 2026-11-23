@@ -72,8 +72,9 @@ def _last_price(ticker):
 
 
 # ---------------------------------------------------------------- recording
-def record(state, src, ticker, direction, conf, by, text="", price=None):
-    """Save one up/down guess. src: news | sec | gov | outlook; by: ai | rules."""
+def record(state, src, ticker, direction, conf, by, text="", price=None, extra=None):
+    """Save one up/down guess. src: news | sec | gov | outlook; by: ai | rules. extra: more fields for the practice
+    rules (insider clusters: {"n": number of insiders})."""
     if not ON or direction not in ("up", "down"):
         return
     p0 = price or _last_price(ticker)
@@ -81,7 +82,7 @@ def record(state, src, ticker, direction, conf, by, text="", price=None):
         return
     lst = _st(state).setdefault("p", [])
     lst.append({"t": int(time.time()), "tk": ticker, "src": src, "by": by, "d": direction, "c": conf,
-                "p0": round(float(p0), 4), "x": _clean(text, 110)})
+                "p0": round(float(p0), 4), "x": _clean(text, 110), **(extra or {})})
     if paper:
         paper.record(lst[-1])
     try:

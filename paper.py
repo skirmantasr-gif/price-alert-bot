@@ -89,13 +89,25 @@ try:
 except Exception:  # pragma: no cover
     NY = None
 
+# 👥 owner 2026-11-23 ("4. proceed"): clusters of exactly 2 insiders in a stock over $5 are no longer bought — in the
+# backtest (2022-10..2026-09, studies/insider_ml_2026-11-22_report.txt) they were 58% of all trades and did about
+# −0.8% vs small caps over 90 days (median −2.4%), negative or flat in EVERY year. 3+ insiders or under $5 still
+# bought. Rule change = new measurement clock: judge 👥 on trades bought from INSIDER_RULE_SINCE on.
+INSIDER_RULE_SINCE = "2026-11-23"
+
+
+def insider_no_edge(s):
+    """True for a 2-insider cluster in a stock at/over $5 (unknown count = still bought)."""
+    return s.get("n") == 2 and (s.get("p0") or 0) >= 5
+
+
 PORTFOLIOS = {
     "strong": ("💪 Strong calls", lambda s: s["d"] == "up" and s["c"] == "high" and s["src"] != "outlook"),
     "likely": ("👍 Likely+ calls", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] != "outlook"),
     "outlook": ("🧭 Hourly outlook", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] == "outlook"),
     "calm": ("🌡️ Mood-filtered", lambda s: s["d"] == "up" and s["c"] in ("medium", "high") and s["src"] != "outlook"
              and s.get("mood") != "defensive"),
-    "insider": ("👥 Insider clusters", lambda s: s["d"] == "up" and s["src"] == "insider"),
+    "insider": ("👥 Insider clusters", lambda s: s["d"] == "up" and s["src"] == "insider" and not insider_no_edge(s)),
 }
 ONLY = {"insider": "insider"}  # source traded by ONE portfolio only (never reaches the other rules)
 # Per-portfolio exits (default: the module constants). trail None = no profit lock; days = sell after N days.

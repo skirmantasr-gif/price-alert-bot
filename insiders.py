@@ -281,14 +281,14 @@ def message(tk, company, n, total, rows, cap=None, now_px=None, avg_px=None):
     return "\n".join(lines), loud
 
 
-def _score(state, tk, conf, text, price):
+def _score(state, tk, conf, text, price, n=None):
     """Save the post as an UP call for the 🎓 review (scored only; paper.NOT_TRADED keeps it out of the practice
     portfolios)."""
     if state is None or not price:
         return
     try:
         import learn
-        learn.record(state, "insider", tk, "up", conf, "rules", text, price)
+        learn.record(state, "insider", tk, "up", conf, "rules", text, price, extra={"n": n} if n else None)
     except Exception as e:
         log.warning("Insider learning record failed: %s", type(e).__name__)
 
@@ -431,7 +431,7 @@ class InsiderWatch:
                 break
             (self.send_main if tk in self.watch else self.send_other)(text, not loud)
             sent += 1
-            _score(state, tk, "high" if loud else "low", f"{n} insiders bought {_usd(total)}", px)
+            _score(state, tk, "high" if loud else "low", f"{n} insiders bought {_usd(total)}", px, n=n)
         cut = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=CLUSTER_DAYS + 2)).strftime("%Y-%m-%d")
         for tk in list(book):
             book[tk] = [r for r in book[tk] if r[0] >= cut]
