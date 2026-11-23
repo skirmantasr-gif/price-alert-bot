@@ -280,6 +280,18 @@ def _sell(pf, tk, price, at, now, why, data=None):
     _log(pf, now, a="sell", tk=tk, ret=round(ret, 4), why=why, p=price, at=int(at))
 
 
+def _refund(pf, o, now, tk):
+    """A waiting order is cancelled: its money goes back to cash, and play money added just for it (top-up) is
+    taken back out, so cancelled orders never leave idle top-up cash that dilutes the return (2026-11-23: €100
+    idle after 10 'not chasing' cancels)."""
+    pf["cash"] += o.get("eur", SIZE_EUR)
+    back = min(o.get("topup", 0.0), pf.get("topup", 0.0), max(pf["cash"], 0.0))
+    if back > 1e-9:
+        pf["cash"] -= back
+        pf["topup"] = pf.get("topup", 0.0) - back
+        _log(pf, now, a="untopup", tk=tk, eur=round(back, 2))
+
+
 def on_signal(st, sig, now=None):
     """sig: {"tk","src","d","c","p0"} (learn.record format). Places orders in every portfolio; they fill in step()."""
     now = now or time.time()
@@ -297,11 +309,12 @@ def on_signal(st, sig, now=None):
                 pf["open"][tk]["exit"] = {"t": int(now), "why": "DOWN call"}
             elif tk in pf["pending"]:
                 o = pf["pending"].pop(tk)
-                pf["cash"] += o.get("eur", SIZE_EUR)
+                _refund(pf, o, now, tk)
                 _log(pf, now, a="cancel", tk=tk, why="DOWN call before the order filled")
         else:
             size = TOPUP.get(key) or (SIZE_STRONG_EUR if sig["c"] == "high" else SIZE_EUR)
             wants = rule(sig) and key not in PAUSED and tk not in pf["open"] and tk not in pf["pending"]
+            add = 0.0
             if wants and key in TOPUP and pf["cash"] < size - 1e-9:
                 add = size - max(pf["cash"], 0.0)
                 pf["cash"] += add
@@ -311,6 +324,8 @@ def on_signal(st, sig, now=None):
                     and pf["cash"] >= size - 1e-9):
                 pf["cash"] -= size  # reserved until the order fills
                 pf["pending"][tk] = {"t": int(now), "src": sig["src"], "c": sig["c"], "alert_p": sig.get("p0"), "eur": size}
+                if add:
+                    pf["pending"][tk]["topup"] = round(add, 2)   # taken back if the order is cancelled
                 _log(pf, now, a="order", tk=tk, src=sig["src"], c=sig["c"], eur=size)
             elif (key in MOOD_GATED and not rule(sig) and PORTFOLIOS[MOOD_GATED[key]][1](sig)
                   and tk not in pf["open"] and tk not in pf["pending"]):
@@ -332,7 +347,7 @@ def step(st, now, data):
                 fill = b[1] * (1 + slip(d, b[1]))
                 ap = o.get("alert_p")
                 if ap and fill > ap * (1 + CHASE):
-                    pf["cash"] += size
+                    _refund(pf, o, now, tk)
                     _log(pf, now, a="cancel", tk=tk, at=int(b[0]),
                          why=f"price already {(fill / ap - 1) * 100:+.0f}% above the alert price — not chasing it")
                     continue
@@ -342,7 +357,7 @@ def step(st, now, data):
                      late=b[0] - o["t"] > 900)
             elif now - o["t"] > 7 * 86400:
                 pf["pending"].pop(tk)
-                pf["cash"] += size
+                _refund(pf, o, now, tk)
                 _log(pf, now, a="cancel", tk=tk, why="no trading for 7 days")
         for tk, pos in list(pf["open"].items()):
             d = data(tk)
@@ -462,6 +477,8 @@ def _line(e, names):
         return f"✖️ Order cancelled <b>${tk}</b> ({html.escape(e['why'])}) {names}"
     if e["a"] == "topup":
         return f"➕ Added €{e.get('eur', 0):.0f} play money (cash ran out before buying <b>${tk}</b>) {names}"
+    if e["a"] == "untopup":
+        return f"➖ Took back €{e.get('eur', 0):.0f} play money (order for <b>${tk}</b> cancelled) {names}"
     if e["a"] != "sell" or "ret" not in e:
         return f"· {html.escape(str(e['a']))} <b>${tk}</b> {names}"
     return (f"{'✅' if e['ret'] > 0 else '❌'} Sold <b>${tk}</b> {_pct(e['ret'])} at {e['p']:,.4g}{_when(e)} "

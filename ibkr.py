@@ -48,6 +48,9 @@ SYNC_SECONDS = 600      # fills / account line refresh
 REQUEST_TIMEOUT = 20    # seconds per IBKR request (ib_async default = wait forever)
 JOB_LIMIT = 180         # a job running longer = stuck worker (2026-11-16: hung all day, buys never sent)
 LIVE_PORT = 4001
+DOWN_WARN = 900         # gateway unreachable this long -> one warning (the daily 05:30 restart takes ~1 min)
+HOLD_MAX = 2 * 86400    # held buys/sells older than this are dropped when the gateway comes back
+CONN_ERRORS = (ConnectionError, OSError, asyncio.TimeoutError, TimeoutError)
 
 
 def enabled():
@@ -120,6 +123,9 @@ class Mirror:
         self.job = None             # job the worker is running now
         self.started = 0.0          # when it started
         self.gen = 0                # worker generation; a stuck worker is abandoned by bumping it
+        self.down_since = None      # gateway unreachable since (time); None = reachable / unknown
+        self.down_warned = False
+        self.held = []              # buy/sell jobs that failed because the gateway was down; retried on reconnect
         logging.getLogger("ib_async").setLevel(logging.WARNING)
 
     # ---- bot thread
@@ -133,6 +139,9 @@ class Mirror:
             self.ib_state = ib
             if self.line:
                 ib["line"] = self.line
+            if not self.held and ib.get("held"):     # survive a bot restart
+                self.held = list(ib["held"])
+            ib["held"] = list(self.held)
         self._watchdog()
         evs = new_events(st)
         for e in evs:
@@ -191,6 +200,12 @@ class Mirror:
                 log.info("IBKR mirror: %s %s …", job.get("a"), job.get("tk"))
             try:
                 self._do(dict(job, gen=gen))
+            except CONN_ERRORS as e:
+                if not self._gateway_down(job, e):
+                    log.warning("IBKR mirror job failed: %s %s", type(e).__name__, str(e)[:120])
+                    if job.get("a") in ("buy", "sell"):
+                        self.send(f"🏦⚠️ IBKR paper: could not {job['a']} <b>${html.escape(job['tk'])}</b> "
+                                  f"({html.escape(type(e).__name__)}) — practice trade still counts", True)
             except Exception as e:
                 log.warning("IBKR mirror job failed: %s %s", type(e).__name__, str(e)[:120])
                 if job.get("a") in ("buy", "sell"):
@@ -201,11 +216,59 @@ class Mirror:
                     if gen == self.gen:
                         self.job = None
 
+    def _gateway_down(self, job, e, now=None):
+        """Connection to IB Gateway failed (2026-11-23: stuck at its login screen after the 05:30 restart, 7 buys
+        lost). Buys/sells are held and retried on reconnect; one warning after DOWN_WARN. Returns True if handled
+        (False = the gateway was reachable for this job, so it is a real per-order failure)."""
+        if not isinstance(e, ConnectionRefusedError) and self.down_since is None:
+            return False      # a timeout while the gateway was up: a real failure of this order
+        now = now or time.time()
+        log.info("IBKR mirror: gateway unreachable (%s)%s", type(e).__name__,
+                 f", holding {job['a']} {job.get('tk')}" if job.get("a") in ("buy", "sell") else "")
+        with self.lock:
+            if self.down_since is None:
+                self.down_since = now
+            if job.get("a") in ("buy", "sell"):
+                self.held.append({k: v for k, v in job.items() if k not in ("gen", "retry")})
+            if self.ib_state is not None:
+                self.ib_state["held"] = list(self.held)
+            warn = not self.down_warned and now - self.down_since >= DOWN_WARN
+            if warn:
+                self.down_warned = True
+            n = len(self.held)
+        if warn:
+            self.send(f"🏦⚠️ <b>IB Gateway not reachable</b> for {int((now - self.down_since) // 60)} min "
+                      f"(port {PORT}) — paper mirror paused"
+                      f"{f', {n} order(s) held, sent when it is back' if n else ''}. "
+                      f"The server restarts the gateway by itself; if this stays, check it.", False)
+        return True
+
+    def _back_up(self, now=None):
+        """First successful connection after an outage: report it and re-queue held orders (recent ones only)."""
+        now = now or time.time()
+        with self.lock:
+            if self.down_since is None:
+                return []
+            since, warned = self.down_since, self.down_warned
+            keep = [j for j in self.held if now - j.get("t", now) <= HOLD_MAX]
+            dropped = len(self.held) - len(keep)
+            self.down_since, self.down_warned, self.held = None, False, []
+            if self.ib_state is not None:
+                self.ib_state["held"] = []
+        log.info("IBKR mirror: gateway back after %d min, %d held order(s) re-queued", (now - since) // 60, len(keep))
+        if warned or keep or dropped:
+            self.send(f"🏦✅ IB Gateway back after {int((now - since) // 60)} min"
+                      f"{f' — sending {len(keep)} held order(s)' if keep else ''}"
+                      f"{f' ({dropped} older than 2 days dropped)' if dropped else ''}", True)
+        return keep
+
     def _connect(self):
         from ib_async import IB
         ib = IB()
         ib.RequestTimeout = REQUEST_TIMEOUT
         ib.connect(HOST, PORT, clientId=CLIENT_ID, timeout=20)
+        for j in self._back_up():
+            self.q.put(j)
         accts = ib.managedAccounts()
         if not is_paper(accts):
             ib.disconnect()
