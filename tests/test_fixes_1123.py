@@ -98,3 +98,22 @@ class GatewayDown(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MoneyInLine(unittest.TestCase):
+    def test_statement_shows_money_in_balance_and_result(self):
+        pf = paper._pf()
+        pf.update(cash=0.0, topup=74.69)
+        pf["open"] = {"AAA": {"p0": 10.0, "eur": 169.75, "cost": 170.0, "t": 0}}
+        txt = paper.account({"pf": {"insider": pf}}, "insider", 100, lambda t: None)
+        self.assertIn("💶 Money put in <b>€174.69</b> (€100 start + €74.69 added)", txt)
+        self.assertIn("balance now <b>€169.75</b>", txt)
+        self.assertIn("result <b>-4.94 €</b>", txt)
+
+    def test_no_line_without_topups(self):
+        pf = paper._pf()
+        self.assertNotIn("Money put in", paper.account({"pf": {"strong": pf}}, "strong", 100, lambda t: None))
+
+    def test_correction_note_line(self):
+        e = {"a": "untopup", "tk": "-", "eur": 110, "note": "11 orders cancelled before they were bought"}
+        self.assertIn("➖ Took back €110 play money (11 orders cancelled before they were bought)", paper._line(e, ""))
