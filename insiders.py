@@ -10,6 +10,7 @@ Posted when a company reaches 2 different buyers and >= CLUSTER_MIN_USD in total
 joins (max POST_MAX per company per cluster). Loud with 3+ buyers, a CEO/CFO among them, or >= $1M in total.
 Watchlist stocks -> main channel, all other stocks -> the contracts channel. GitHub only (needs SEC_CONTACT)."""
 import html
+import math
 import json
 import logging
 import os
@@ -225,6 +226,53 @@ HIST = {("2", "ge5"): (53, 1.1, 2.4, -0.8, 1289), ("3", "ge5"): (56, 2.6, 5.3, 1
 HOLD_DAYS = 90
 
 
+# 🔭 Same backtest, by time held (owner 2026-11-23: "prediction for 5 days, 1 month and 6 months"), buy next open,
+# 5 / 21 / 126 trading days: (rose %, middle result %, 25th %, 75th %). studies/insider_horizons_2026-11-23.
+HORIZ = {("2", "ge5"): {"5d": (54, 0.4, -2.9, 4.0), "1m": (53, 0.6, -6.0, 7.6), "6m": (52, 1.3, -14.0, 18.7)},
+         ("3", "ge5"): {"5d": (56, 0.6, -2.2, 4.7), "1m": (58, 1.7, -4.3, 9.2), "6m": (56, 3.7, -10.4, 20.6)},
+         ("2", "lt5"): {"5d": (46, -0.6, -5.3, 6.0), "1m": (50, 0.4, -9.0, 14.4), "6m": (50, 0.7, -19.8, 47.0)},
+         ("3", "lt5"): {"5d": (48, 0.0, -5.8, 7.2), "1m": (52, 0.6, -9.4, 13.5), "6m": (46, -2.3, -26.9, 26.9)}}
+HORIZ_DAYS = {"5d": (5, "5 days"), "1m": (21, "1 month"), "6m": (126, "6 months")}
+
+
+def daily_sigma(tk):
+    """Standard deviation of the stock's daily log returns over the last year, or None."""
+    try:
+        import context
+        closes = [c for _, c in (context.daily(tk) or {}).get("closes", []) if c]
+    except Exception:
+        return None
+    rets = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]
+    if len(rets) < 60:
+        return None
+    m = sum(rets) / len(rets)
+    return (sum((r - m) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5
+
+
+def horizon_lines(n, price, sigma=None):
+    """🔭 lines for 5 days / 1 month / 6 months: lean, share of past clusters that rose, middle result and the usual
+    range (middle half of outcomes) — sized to this stock's own daily swings when known, else the backtest's."""
+    if not price:
+        return []
+    key = ("3" if n >= 3 else "2", "lt5" if price < 5 else "ge5")
+    out = []
+    for h, (days, label) in HORIZ_DAYS.items():
+        up, med, p25, p75 = HORIZ[key][h]
+        if sigma:
+            half = 0.674 * sigma * math.sqrt(days)          # middle half of a normal spread of log returns
+            lo, hi = (math.exp(math.log1p(med / 100) - half) - 1) * 100, (math.exp(math.log1p(med / 100) + half) - 1) * 100
+        else:
+            lo, hi = p25, p75
+        lean = ("📈 leans up" if up >= 55 and med > 0 else "📉 leans down" if up <= 45 and med < 0
+                else "↔️ about a coin flip")
+        out.append(f"🔭 <b>Next {label}</b>: {lean} — {up}% of past clusters like this rose · middle {med:+.1f}% · "
+                   f"usual range {lo:+.1f}% … {hi:+.1f}%")
+    out.append("<i>🔭 From 2,200+ past clusters of the same kind (2 / 3+ insiders, under / over $5). Usual range = "
+               "the middle half of outcomes" + (", sized to this stock's own price swings over the last year"
+                                                 if sigma else "") + ". Not a promise.</i>")
+    return out
+
+
 def expectation(n, price, today=None):
     """'🔮 Expected …' line from past clusters of the same kind (insiders 2 / 3+, price under / over $5), or ''."""
     if not price:
@@ -426,6 +474,9 @@ class InsiderWatch:
                     text += "\n" + "\n".join(ctx)
             except Exception:
                 pass
+            hz = horizon_lines(n, px, daily_sigma(tk))   # 🔭 at the very end (owner 2026-11-23)
+            if hz:
+                text += "\n" + "\n".join(hz)
             if sent >= MAX_POSTS:
                 log.info("Insider scan: more clusters than %d in one scan; rest skipped", MAX_POSTS)
                 break
