@@ -117,3 +117,21 @@ class MoneyInLine(unittest.TestCase):
     def test_correction_note_line(self):
         e = {"a": "untopup", "tk": "-", "eur": 110, "note": "11 orders cancelled before they were bought"}
         self.assertIn("➖ Took back €110 play money (11 orders cancelled before they were bought)", paper._line(e, ""))
+
+
+class LongStatementNotCut(unittest.TestCase):
+    def test_long_statement_sent_whole(self):
+        sent = []
+        pt = paper.Tracker.__new__(paper.Tracker)
+        pt.send = lambda text, silent: sent.append(text) or True
+        pt.data = lambda tk: None
+        st = paper.new_state(0)
+        pf = st["pf"]["insider"]
+        for i in range(30):
+            pf["open"][f"T{i:02d}"] = {"p0": 10.0, "eur": 9.98, "cost": 10.0, "t": 0}
+        st["ib"] = {"line": "🏦 IBKR paper mirror (insider): net value $1,000,000"}
+        pt._post(st, 3600, "test")
+        self.assertGreater(len(sent[0]), 4000)
+        self.assertIn("No trades since the last statement", sent[0])     # the very end is there
+        self.assertIn("IBKR paper mirror", sent[0])
+        self.assertFalse(sent[0].rstrip().endswith("…"))
