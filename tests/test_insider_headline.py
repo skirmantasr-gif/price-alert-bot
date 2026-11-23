@@ -57,5 +57,36 @@ class InsiderHeadline(unittest.TestCase):
         self.assertTrue(msg.startswith("🚨"), msg)
 
 
+class OnDemandLookup(unittest.TestCase):
+    def setUp(self):
+        news._F4_LOOKED.clear()
+
+    def filings(self, now):
+        from datetime import datetime, timezone
+        d = datetime.fromtimestamp(now - 3600, timezone.utc)
+        old = datetime.fromtimestamp(now - 40 * 86400, timezone.utc)
+        return lambda t: [{"acc": "a1", "form": "4", "date": d}, {"acc": "a2", "form": "8-K", "date": d},
+                          {"acc": "a3", "form": "4", "date": old}, {"acc": "a4", "form": "4/A", "date": d}]
+
+    def test_reads_recent_form4s_then_check_works(self):
+        now = time.time()
+        ns, read = {}, []
+        docs = {"a1": ins("Neglen Niclas", [tx("A", 22102, 0)]), "a4": ins("Sykes David", [tx("A", 56434, 0)])}
+        doc_fn = lambda f: read.append(f["acc"]) or docs[f["acc"]]
+        self.assertEqual(news.f4_lookup(ns, "KLAR", self.filings(now), doc_fn, now=now), 2)
+        self.assertEqual(read, ["a1", "a4"])                      # no 8-K, no 40-day-old filing
+        it = headline("Klarna CFO Niclas Neglen Purchases 22,102 Shares on November 16, 2026")
+        self.assertEqual(news.f4_check(ns, it, now=now), ("grant", "A"))
+
+    def test_not_twice_within_gap_and_no_rereads(self):
+        now = time.time()
+        ns, read = {}, []
+        doc_fn = lambda f: read.append(f["acc"]) or ins("Neglen Niclas", [tx("A", 1, 0)])
+        news.f4_lookup(ns, "KLAR", self.filings(now), doc_fn, now=now)
+        self.assertEqual(news.f4_lookup(ns, "KLAR", self.filings(now), doc_fn, now=now + 60), 0)
+        self.assertEqual(news.f4_lookup(ns, "KLAR", self.filings(now), doc_fn, now=now + 700), 0)  # already read
+        self.assertEqual(read, ["a1", "a4"])
+
+
 if __name__ == "__main__":
     unittest.main()
