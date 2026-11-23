@@ -811,8 +811,8 @@ class Tracker:
         else:
             parts.append("<i>No trades since the last statement.</i>")
         text = "\n\n".join(parts)
-        if len(text) > 4000:
-            text = text[:3990].rsplit("\n", 1)[0] + "\n…"
+        # no cutting: bot.send_telegram splits long texts into parts at line ends (2026-11-23: with 17 👥 holdings
+        # the statement passed 4,000 chars and the end — S&P line, IBKR line, trades — was cut to "…")
         if self.send(text, True) and new:
             st["posted"] = new[-1][0]
 
