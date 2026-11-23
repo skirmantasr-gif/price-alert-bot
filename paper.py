@@ -490,6 +490,8 @@ def _line(e, names):
     if e["a"] == "topup":
         return f"➕ Added €{e.get('eur', 0):.0f} play money (cash ran out before buying <b>${tk}</b>) {names}"
     if e["a"] == "untopup":
+        if e.get("note"):     # one-off correction of several orders (2026-11-23)
+            return f"➖ Took back €{e.get('eur', 0):.0f} play money ({html.escape(e['note'])}) {names}"
         return f"➖ Took back €{e.get('eur', 0):.0f} play money (order for <b>${tk}</b> cancelled) {names}"
     if e["a"] != "sell" or "ret" not in e:
         return f"· {html.escape(str(e['a']))} <b>${tk}</b> {names}"
@@ -671,7 +673,10 @@ def account(st, key, now, data):
     head = (f"{name}: <b>€{total:.2f}</b> ({_pct(total / base(pf) - 1)}{_put_in(pf)}){_dd(pf.get('eq'))}\n"
             f"   💵 Free cash €{cash:.2f}" + (f" · ⏳ reserved €{reserved:.0f}" if reserved else "")
             + (f" · 📈 in stocks €{stock_val:.2f}" if pf["open"] else "") + (f" (invested €{invested:.0f}, {stock_val - invested:+.2f})" if invested else "")
-            + (f"\n   ✔️ Closed trades: {len(pf['closed'])}, profit {realized:+.2f} €" if pf["closed"] else ""))
+            + (f"\n   ✔️ Closed trades: {len(pf['closed'])}, profit {realized:+.2f} €" if pf["closed"] else "")
+            + (f"\n   💶 Money put in <b>€{base(pf):.2f}</b> (€{START_EUR:.0f} start + €{pf['topup']:.2f} added)"
+               f" · balance now <b>€{total:.2f}</b> · result <b>{total - base(pf):+.2f} €</b>"
+               if pf.get("topup") else ""))
     if not rows:
         return head + "\n   <i>no positions — all in cash</i>"
     return head + "\n" + "\n".join(rows)
