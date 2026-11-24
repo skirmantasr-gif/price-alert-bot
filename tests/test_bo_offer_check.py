@@ -95,3 +95,55 @@ class FallingKnives(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RumourWithSaleHistory(unittest.TestCase):
+    """BILL Nov 2026: activists + sale reports all year, fingerprint 2/6; a fresh take-private report came true."""
+    def run_one(self, kind, old, score=2, cap=5e9):
+        import json as _json
+        heads = [{"title": "Bigco said to near deal for Zentrox", "source": "Wire", "link": "https://x/z",
+                  "date": buyout.datetime.now(buyout.timezone.utc), "desc": ""}]
+        answer = {"items": [{"id": 0, "company": "Zentrox Inc.", "ticker": "ZNTX", "type": kind, "offer_price": 0}]}
+        client = mock.Mock()
+        client.messages.create.return_value = mock.Mock(stop_reason="end_turn",
+                                                        content=[mock.Mock(type="text", text=_json.dumps(answer))])
+        client.beta.messages.create.return_value = client.messages.create.return_value
+        row = {"t": "ZNTX", "score": score, "hits": [], "name": "Zentrox, Inc.", "price": 10.0, "mcap": cap,
+               "off_high": 0.0, "avg_vol": 5e6}
+        with mock.patch.dict("sys.modules", {"anthropic": mock.Mock(Anthropic=lambda **k: client)}), \
+                mock.patch.object(buyout.impact, "ai_enabled", lambda: True), \
+                mock.patch.object(buyout, "SIGNAL_QUERIES", ["q"]), \
+                mock.patch.object(buyout, "alpaca_heads", lambda h: []), \
+                mock.patch.object(buyout, "google", lambda q: heads), \
+                mock.patch.object(buyout.time, "sleep", lambda s: None), \
+                mock.patch.object(buyout, "yahoo_find", lambda c, h: ("ZNTX", "Zentrox, Inc.")), \
+                mock.patch.object(buyout, "score", lambda t: row), \
+                mock.patch.object(buyout.BuyoutWatch, "_old_news", staticmethod(lambda *a: old)):
+            return buyout.BuyoutWatch(lambda *a: True)._signals_job(set())["hits"]
+
+    def test_low_score_rumour_with_history_posted(self):
+        hits = self.run_one("rumour", "old story")
+        self.assertEqual(len(hits), 1)
+        self.assertTrue(hits[0]["hist"])
+
+    def test_low_score_rumour_without_history_skipped(self):
+        self.assertEqual(self.run_one("rumour", ""), [])
+
+    def test_old_story_still_skips_other_signals(self):
+        self.assertEqual(self.run_one("strategic_review", "old story"), [])
+
+    def test_moved_stock_still_skipped(self):
+        self.assertEqual(self.run_one("rumour", "stock already moved"), [])
+
+    def test_microcap_signal_now_allowed(self):
+        self.assertEqual(len(self.run_one("strategic_review", "", cap=30e6)), 1)
+        self.assertEqual(self.run_one("strategic_review", "", cap=10e6), [])
+
+    def test_history_post_is_loud_with_line(self):
+        sent = []
+        w = buyout.BuyoutWatch(lambda text, silent: sent.append((text, silent)) or True)
+        hit = self.run_one("rumour", "old story")[0]
+        with mock.patch.dict("sys.modules", {"context": mock.Mock(lines=lambda *a, **k: [])}):
+            w._finish_signals({}, {"seen": [], "n": 1, "hits": [hit]}, first=False)
+        self.assertIn("Earlier sale / takeover headlines", sent[0][0])
+        self.assertIsNone(sent[0][1])    # loud
