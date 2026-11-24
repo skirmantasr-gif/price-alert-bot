@@ -208,7 +208,8 @@ SIGNAL_MAX_AGE_H = 30
 SIGNAL_REPEAT_DAYS = 14   # same stock + same kind of signal: once per two weeks
 SIGNAL_MAX_POSTS = 5      # per hourly scan
 SIGNAL_KEEP_DAYS = 30     # a signal-added candidate stays watched this long even with a low fingerprint
-SIGNAL_MIN_CAP, SIGNAL_MAX_CAP = 100e6, 20e9
+SIGNAL_MIN_CAP, SIGNAL_MAX_CAP = 20e6, 20e9   # floor was $100M: Nov 10-24 2026 three of four signed deals were
+                                              # micro-caps (AYTU $29M, RPID $37M, RSSS $73M; premiums up to +52%)
 SIGNAL_QUERIES = [
     '("explore strategic alternatives" OR "exploring strategic alternatives" OR "review of strategic alternatives" '
     'OR "strategic review" OR "explore a sale" OR "exploring a sale" OR "explore a potential sale") when:1d',
@@ -907,9 +908,16 @@ class BuyoutWatch:
             cap = r["mcap"] if r else None
             if cap is not None and not SIGNAL_MIN_CAP <= cap <= SIGNAL_MAX_CAP:
                 continue
-            if x["type"] == "rumour" and not (r and r["score"] >= MIN_SCORE - 1):
-                continue    # anonymous-source stories only for stocks that also fit the buyout fingerprint
+            fits = bool(r and r["score"] >= MIN_SCORE - 1)
             why_old = self._old_news(hit[0], hit[1], company, h)
+            hist = False
+            if x["type"] == "rumour" and why_old == "old story":
+                # a fresh rumour about a stock with an earlier sale story (activist, sale review, earlier bid reports):
+                # BILL Nov 2026 (Elliott + Starboard, sale reports all year, fingerprint 2/6) - FT report Nov 17
+                # +12.6%, signed with TPG two days later. Posted whatever its fingerprint.
+                hist, why_old = True, ""
+            if x["type"] == "rumour" and not (fits or hist):
+                continue    # other anonymous-source stories only for stocks that also fit the buyout fingerprint
             if why_old:
                 log.info("Sale signals: skipped (%s)", why_old)
                 continue
@@ -918,7 +926,7 @@ class BuyoutWatch:
                                           r["price"] if r else None)
             out["hits"].append({"t": hit[0], "name": hit[1], "type": kind, "title": h["title"],
                                 "source": h["source"], "link": h["link"], "date": h["date"], "row": r,
-                                "offer": offer_line})
+                                "offer": offer_line, "hist": hist})
         return out
 
     @staticmethod
@@ -987,6 +995,9 @@ class BuyoutWatch:
                 facts.append(f"{r['off_high'] * 100:+.0f}% vs 1-year high")
             watch = (" · watching it now (daily table + live checks)" if x["t"] in cands else "")
             extra = [x["offer"]] if x.get("offer") else []
+            if x.get("hist"):
+                extra.append("📚 Earlier sale / takeover headlines found in the past year (activist, sale review or bid reports) "
+                             "— check them; such rumours were the most reliable kind (BILL Nov 2026: report → signed deal in 2 days)")
             if r and r.get("avg_vol") and r.get("price") and r["avg_vol"] * r["price"] < THIN_DOLLAR_VOL:
                 extra.append(f"💧 Thin trading: ~${_m(r['avg_vol'] * r['price'])}/day — news can move it 50-100% "
                              "either way (OTLY Nov 2026: +109% the day after a below-market offer)")
@@ -1006,7 +1017,7 @@ class BuyoutWatch:
                       + f'<a href="{html.escape(x["link"])}">Open</a>\n'
                       + ("<i>Not a buyout premium: the price can swing hard either way. Not advice.</i>" if control else
                          "<i>Public sale signals came before many past buyouts, but most reviews end without a deal "
-                         "or at a small premium. Not advice.</i>"), True if rumour else None)
+                         "or at a small premium. Not advice.</i>"), True if rumour and not x.get("hist") else None)
             extras.remember(x["t"], f"🎯📣 ${x['t']} {x['title']}", x["link"])
             if state is not None and not control:   # scored in the 🎓 review (not traded: paper.NOT_TRADED)
                 try:
