@@ -76,13 +76,13 @@ class Cluster(unittest.TestCase):
 
 
 class Watch(unittest.TestCase):
-    def run_finish(self, st, res, watch=("ZNTX",)):
+    def run_finish(self, st, res, watch=("ZNTX",), now=None):
         main, other = [], []
         w = insiders.InsiderWatch(lambda t, s: main.append((t, s)), lambda t, s: other.append((t, s)), watch)
         with mock.patch.object(insiders, "price_now", lambda tk: 5.0), mock.patch.object(insiders, "market_cap", lambda tk, *a: 3e8), \
                 mock.patch.object(insiders, "datetime", wraps=insiders.datetime) as dt:
             dt.now.return_value = insiders.datetime(2026, 11, 12, 12, tzinfo=insiders.timezone.utc)
-            w._finish(st, res)
+            w._finish(st, res, now=now)
         return main, other
 
     def test_first_scan_silent_then_posts_and_routes(self):
@@ -92,14 +92,17 @@ class Watch(unittest.TestCase):
         o1 = f4("Smith John", CEO, [("2026-11-10", "P", 20000, 5.0)], tk="OTHR")
         o2 = f4("Doe Jane", DIR, [("2026-11-11", "P", 20000, 5.0)], tk="OTHR")
         st = {}
-        self.assertEqual(self.run_finish(st, [("x0", None)]), ([], []))           # first scan only learns
-        main, other = self.run_finish(st, [("a1", a), ("a2", b), ("o1", o1), ("o2", o2)])
+        self.assertEqual(self.run_finish(st, [("x0", None)], now=0), ([], []))    # first scan only learns
+        self.assertEqual(self.run_finish(st, [("a1", a), ("a2", b), ("o1", o1), ("o2", o2)], now=1000), ([], []))
+        main, other = self.run_finish(st, [], now=1000 + insiders.HOLD_SECONDS)     # held one quiet scan (2026-11-25)
         self.assertEqual(len(main), 1)                                             # watchlist stock -> main
         self.assertEqual(len(other), 1)                                            # others -> contracts channel
         self.assertIn("$ZNTX</b> INSIDER CLUSTER BUY", main[0][0])
-        self.assertEqual(self.run_finish(st, [("a2", b)]), ([], []))                # nothing new
-        main, _ = self.run_finish(st, [("a3", c)])                                 # a 3rd insider joins
+        self.assertEqual(self.run_finish(st, [("a2", b)], now=5000), ([], []))     # nothing new
+        self.assertEqual(self.run_finish(st, [("a3", c)], now=6000), ([], []))     # a 3rd insider joins: held
+        main, _ = self.run_finish(st, [], now=6000 + insiders.HOLD_SECONDS)
         self.assertIn("3 insiders", main[0][0])
+        self.assertIn("(update: 1 more since the last post)", main[0][0])
         self.assertFalse(main[0][1])                                               # loud (3+ buyers)
         self.assertIn("a3", st["seen"])
 
