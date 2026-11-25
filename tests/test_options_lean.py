@@ -1,9 +1,11 @@
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 import options
 
 TODAY = date(2026, 11, 20)
+# the watch uses the real date: keep its contracts 10 days out (a fixed date broke on 2026-11-25)
+EXP = (date.today() + timedelta(days=10)).isoformat()
 
 
 def u(exp, cp, k, usd, vol=1000, oi=100):
@@ -48,7 +50,7 @@ class Lean(unittest.TestCase):
 class Watch(unittest.TestCase):
     def setUp(self):
         self.old_get = options.get
-        self.snap = {"price": 100.0, "unusual": [u("2026-11-27", "P", 100, 1.1e6, 3254, 1500)]}
+        self.snap = {"price": 100.0, "unusual": [u(EXP, "P", 100, 1.1e6, 3254, 1500)]}
         options.get = lambda t: self.snap
 
     def tearDown(self):
@@ -64,7 +66,7 @@ class Watch(unittest.TestCase):
         self.assertIn("FALL until", sent[0])
         self.assertIn("none scored yet", sent[0])
         # 25 min later: more contracts, but no second message within the hour
-        self.snap["unusual"] = self.snap["unusual"] + [u("2026-11-27", "P", 90, 165e3)]
+        self.snap["unusual"] = self.snap["unusual"] + [u(EXP, "P", 90, 165e3)]
         clock[0] += 1500
         w.last = float("-inf")
         w.check(st)
@@ -87,7 +89,7 @@ class Watch(unittest.TestCase):
         sent = []
         st = {}
         options.UnusualWatch(lambda t, s: sent.append(t), ["ORCL"], now=lambda: 1000.0).check(st)
-        self.snap["unusual"] = self.snap["unusual"] + [u("2026-11-27", "C", 110, 200e3)]
+        self.snap["unusual"] = self.snap["unusual"] + [u(EXP, "C", 110, 200e3)]
         options.UnusualWatch(lambda t, s: sent.append(t), ["ORCL"], now=lambda: 1600.0).check(st)   # new process
         self.assertEqual(len(sent), 1)
 
