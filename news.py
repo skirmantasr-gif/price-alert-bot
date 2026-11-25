@@ -60,7 +60,7 @@ MAX_SENDS_PER_POLL = 15     # rest waits for the next poll (keeps price checks r
 COMPANIES = watchlist.COMPANIES
 GOV_NAMES = watchlist.GOV_NAMES
 CONTRACT_MIN = float(os.environ.get("CONTRACT_MIN_USD", "20000000"))   # 🚨 + UP push at/above this
-GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "900"))  # was 300; server's fixed IP got HTTP 429 (2026-11-16)  # Google blocks too-frequent automated searches
+GOOGLE_SECONDS = int(os.environ.get("GOOGLE_NEWS_SECONDS", "1800"))  # 2026-11-25: was 900 (still 429 every few h); was 300; server's fixed IP got HTTP 429 (2026-11-16)  # Google blocks too-frequent automated searches
 CONTRACT_SEARCH_SECONDS = int(os.environ.get("CONTRACT_SEARCH_SECONDS", "7200"))  # was 900 (2026-11-22 Google budget)
 # Off by default since 2026-11-17: it doubled the Google searches (Google rate-limits the server IP) and
 # contracts.py already scans every new federal award. GOOGLE_CONTRACTS=true turns it back on.

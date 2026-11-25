@@ -132,9 +132,9 @@ SHARED_RE = re.compile(r"(multiple[- ]award|multi[- ]award|several (companies|ve
 NOT_WINNER_RE = re.compile(r"(\bprivate(ly[- ]held)? (firm|company|business)\b|\bnot (publicly )?listed\b|\bunlisted\b|"
                            r"\bunrelated to\b|\bno relation\b|\bnot affiliated\b)", re.I)
 WIRE_SECONDS = int(os.environ.get("CONTRACT_WIRE_SECONDS", "120"))   # PR Newswire live feed
-US_SECONDS = int(os.environ.get("CONTRACT_US_SECONDS", "600"))       # US Google News search (was 300)
+US_SECONDS = int(os.environ.get("CONTRACT_US_SECONDS", "1800"))      # US Google News search (was 300, 600; 2026-11-25 Google 429s)
 # other markets: one Google search every MARKET_SECONDS (was every loop ≈ 1 min; 2026-11-22 Google budget)
-MARKET_SECONDS = int(os.environ.get("CONTRACT_MARKET_SECONDS", "240"))
+MARKET_SECONDS = int(os.environ.get("CONTRACT_MARKET_SECONDS", "600"))   # 2026-11-25: was 240 (Google 429 every few h)
 # USAspending.gov: every NEW US federal contract award (any company), official data. Civilian agencies appear ~2-5
 # days after signing, the Defense Department only after a 90-day delay. Searched with no company list (a long name
 # list gets HTTP 503). Winners are matched to US-listed stocks (= on IBKR, Trading 212 and Revolut).
