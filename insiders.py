@@ -30,6 +30,17 @@ CLUSTER_DAYS = 14
 CLUSTER_MIN_USD = float(os.environ.get("INSIDER_CLUSTER_MIN_USD", "100000"))
 LOUD_USD = 1_000_000
 POST_MAX = 3
+# owner check 2026-11-25: CTSO / PRE / TROX were posted twice 10 min apart (one more filing in the next scan).
+# A new or grown cluster now waits until a scan brings no more buys for it (>= HOLD_SECONDS since the last one).
+HOLD_SECONDS = int(os.environ.get("INSIDER_HOLD_SECONDS", "1200"))
+_NO_TICKER = {"", "NONE", "N/A", "NA", "NULL", "-", "--"}
+
+
+def real_ticker(tk):
+    """Funds without a listing file 'NONE' (2026-11-25: '$NONE' cluster for a Blackstone hedge fund)."""
+    return tk not in _NO_TICKER and bool(re.match(r"^[A-Z][A-Z0-9.\-]{0,6}$", tk or ""))
+
+
 MAX_POSTS = 8              # clusters posted per scan (a busy window after earnings season)
 MAX_PAGES = 8              # 100 feed entries (~50 filings) per page
 MAX_FILINGS = 400          # per scan, so a backlog can't hold the thread for long
@@ -421,7 +432,7 @@ class InsiderWatch:
             self.thread.start()
         return changed
 
-    def _finish(self, st, res, state=None):
+    def _finish(self, st, res, state=None, now=None):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         first = not st.get("init")
         st["init"] = True
@@ -441,7 +452,7 @@ class InsiderWatch:
         touched, buys = set(), 0
         for acc, f, *_ in res:
             seen.append(acc)
-            if f and add_buys(book, f, acc, today):
+            if f and real_ticker(f["ticker"]) and add_buys(book, f, acc, today):
                 buys += 1
                 touched.add(f["ticker"])
                 names[f["ticker"]] = f["company"][:60]
@@ -449,7 +460,17 @@ class InsiderWatch:
                     st.setdefault("ciks", {})[f["ticker"]] = _[0]
         del seen[:-3000]
         sent = 0
-        for tk in sorted(touched):
+        now = time.time() if now is None else now
+        pend = st.setdefault("pend", {})              # ticker -> time of its latest new buy (cluster waiting)
+        for tk in touched:
+            pend[tk] = now
+        for tk in sorted(pend):
+            if tk not in book:
+                del pend[tk]
+                continue
+            if now - pend[tk] < HOLD_SECONDS and not first:
+                continue          # more filings for this cluster may come in the next scan
+            del pend[tk]
             c = cluster(book[tk], today)
             if not c:
                 continue
@@ -457,6 +478,7 @@ class InsiderWatch:
             p = posted.get(tk)
             if p and p[0] >= rows[0][0] and (n <= p[1] or p[2] >= POST_MAX):
                 continue          # this cluster was already posted with as many buyers (or often enough)
+            was = p[1] if p and p[0] >= rows[0][0] else None
             posted[tk] = [rows[0][0], n, (p[2] + 1) if p and p[0] >= rows[0][0] else 1]
             if first:
                 continue          # first scan: only learn
@@ -467,6 +489,9 @@ class InsiderWatch:
             except Exception:
                 px = None
             text, loud = message(tk, names.get(tk, tk), n, total, rows, market_cap(tk, px, st.get("ciks", {}).get(tk)), px, avg)
+            if was:
+                text = text.replace("INSIDER CLUSTER BUY", f"INSIDER CLUSTER BUY (update: {n - was} more since the "
+                                                           f"last post)", 1)
             try:
                 import context
                 ctx = context.lines(tk, market=False)

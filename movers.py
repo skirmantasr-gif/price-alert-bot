@@ -324,6 +324,17 @@ def headlines(sym, since):
     return uniq[-12:]
 
 
+# owner check 2026-11-25: ALTG +33% "agrees to acquire Jackson Group Peterbilt" got a 🔬 buyout post-mortem and
+# counted in the tally - ALTG was the BUYER. Post-mortems now need deal_role 'target'; old wrong entries dropped.
+NOT_BUYOUTS = {("2026-11-24", "ALTG")}
+
+
+def is_buyout_target(ai):
+    """A real buyout of THIS stock (older AI answers without deal_role still count)."""
+    ai = ai or {}
+    return ai.get("cause") == "buyout" and ai.get("deal_role", "target") in ("target", "")
+
+
 # ---------------------------------------------------------------- AI: why did it move
 SYSTEM = (
     "You explain why US stocks made big moves today. For each stock you get the day's % change, sector and the "
@@ -335,13 +346,18 @@ SYSTEM = (
     "- scheduled: true only if the trigger was a known date in advance (earnings release, FDA decision date, "
     "scheduled trial readout, investor day, index inclusion).\n"
     "- sympathy_with: the ticker of the peer it moved with, if cause is sympathy and the ticker is clear, else ''.\n"
-    "- headline_id: id of the headline that best explains it, or -1."
+    "- headline_id: id of the headline that best explains it, or -1.\n"
+    "- deal_role: only for cause 'buyout': 'target' if THIS company is being bought / got a takeover or tender "
+    "offer; 'acquirer' if THIS company is buying another company or business; 'other' otherwise (merger of "
+    "equals, unclear). '' for other causes."
 )
 SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "items": {
     "type": "object", "properties": {
         "id": {"type": "integer"}, "cause": {"type": "string", "enum": CAUSES}, "reason": {"type": "string"},
-        "scheduled": {"type": "boolean"}, "sympathy_with": {"type": "string"}, "headline_id": {"type": "integer"}},
-    "required": ["id", "cause", "reason", "scheduled", "sympathy_with", "headline_id"], "additionalProperties": False}}},
+        "scheduled": {"type": "boolean"}, "sympathy_with": {"type": "string"}, "headline_id": {"type": "integer"},
+        "deal_role": {"type": "string", "enum": ["target", "acquirer", "other", ""]}},
+    "required": ["id", "cause", "reason", "scheduled", "sympathy_with", "headline_id", "deal_role"],
+    "additionalProperties": False}}},
     "required": ["items"], "additionalProperties": False}
 _client = None
 
@@ -602,7 +618,7 @@ class MoversWatch:
         for i, r in enumerate(movers):
             r["ai"] = why.get(i)
         for r in up:   # 🔬 buyout post-mortem: fingerprint on the data from before the jump
-            if (r.get("ai") or {}).get("cause") == "buyout" and r["pct"] >= PM_MIN_PCT:
+            if is_buyout_target(r.get("ai")) and r["pct"] >= PM_MIN_PCT:
                 try:
                     import buyout
                     r["pm"] = buyout.postmortem(r["s"], day, bo_cands.get(r["s"]))
@@ -652,6 +668,7 @@ class MoversWatch:
         if self.send_bo:
             import buyout
             pms = mv.setdefault("pm", [])
+            pms[:] = [x for x in pms if (x[0], x[1]) not in NOT_BUYOUTS]
             for r in res["up"]:
                 pm = r.get("pm")
                 if not pm or any(x[0] == day and x[1] == r["s"] for x in pms):

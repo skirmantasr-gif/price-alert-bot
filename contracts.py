@@ -322,6 +322,9 @@ def _gov_name_match(recipient, listed):
     words of the recipient must both be in the listed name (one word only if it is the whole name)."""
     wa = [w for w in _name_words(recipient) if w not in _GOV_SKIP][:2]
     wb = set(_name_words(listed))
+    if len(wa) == 1:   # owner check 2026-11-25: 'EMERGENT LLC' (an IT reseller) matched Emergent BioSolutions
+        rest = {w for w in wb if w not in _GOV_SKIP and w not in _LEGAL}
+        return len(wa[0]) >= 3 and rest == {wa[0]}
     return bool(wa) and len(wa[0]) >= 3 and all(w in wb for w in wa)
 
 

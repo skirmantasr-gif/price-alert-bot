@@ -93,6 +93,7 @@ FAST_SECONDS = 60
 FAST_SIG_GAP = 120         # an early 📣 scan (Alpaca only) at most this often
 RUMOUR_KEEP_H = 48         # Alpaca takeover headlines kept for the daily discovery
 RUMOUR_MAX = 150
+LATE_HOURS = 2                # older headlines get a ⏰ age line
 GOOGLE_SECONDS = int(os.environ.get("BUYOUT_GOOGLE_SECONDS", "14400"))  # per candidate; was 1800 (2026-11-22 Google budget)
 SPIKE_LEVELS = (0.10, 0.20)  # alert at +10%, again at +20% (same day)
 SPIKE_LOUD, SPIKE_LOUD_PACE = 0.15, 5   # with sound only from +15% on 5x normal volume
@@ -600,8 +601,14 @@ def event_words(title, t, name):
     return out
 
 
+def _amt(w):
+    """'$37m' / '$37' -> '$37' so differently written amounts still match."""
+    m = re.match(r"^\$(\d+(?:\.\d+)?)(?:m|mn|b|bn|k)?$", w)
+    return "$" + m.group(1) if m else w
+
+
 def same_event(a, b):
-    both = len(set(a) & set(b))
+    both = len({_amt(w) for w in a} & {_amt(w) for w in b})
     return both >= 1 and both >= min(2, len(a), len(b))
 
 
@@ -1180,12 +1187,17 @@ class BuyoutWatch:
             ew = event_words(h["title"], t, name)
             cut_ev = (datetime.now(timezone.utc) - timedelta(days=EVENT_DAYS)).strftime("%Y-%m-%d")
             ev[t] = [e for e in ev.get(t, []) if e[0] >= cut_ev]
-            if not hit and any(same_event(ew, e[1]) for e in ev[t]):
-                continue   # same story as a 📰 already posted (another site's headline)
+            # same story already posted (another site's headline). A 🎯 takeover headline only repeats an earlier
+            # 🎯 one (owner check 2026-11-25: TSQ "rejects $37M bid" posted 4× in 12 h with slightly different words)
+            if any(same_event(ew, e[1]) and (not hit or (len(e) > 2 and e[2])) for e in ev[t]):
+                continue
             if ew:
-                ev[t] = (ev[t] + [[today, sorted(ew)]])[-20:]
+                ev[t] = (ev[t] + [[today, sorted(ew), bool(hit)]])[-20:]
             head = (f"🎯 <b>${t}</b> takeover-type news" if hit else f"📰 <b>${t}</b> major news")
             when = " · " + extras.fmt_local(h["date"]) if h["date"] else ""
+            age = (datetime.now(timezone.utc) - h["date"]).total_seconds() / 3600 if h["date"] else 0
+            if age >= LATE_HOURS:   # owner check 2026-11-25: day-old ELE / MNKD / CHYM news looked fresh
+                head = "⏰" + head + f"\n⏰ Published {age:.0f}h ago — the market may already know"
             self.send(f"{head}\n{html.escape(h['title'])}\n<i>{html.escape(h['source'] or 'news')}</i>{when}\n"
                       f'<a href="{html.escape(h["link"])}">Open</a>', True)   # headlines: quiet (owner 2026-11-12)
             # first line = what "🔎 Possibly related" shows later: the headline itself, not "major news"
