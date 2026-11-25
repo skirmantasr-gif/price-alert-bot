@@ -88,14 +88,29 @@ def daily(sym):
     return _cached("daily:" + sym, 6 * 3600, f)
 
 
+def _meta(sym):
+    """Yahoo 1-day chart meta, cached 5 minutes."""
+    return _cached("meta:" + sym, 300, lambda: json.loads(_get(
+        "https://query1.finance.yahoo.com/v8/finance/chart/" + urllib.parse.quote(sym)
+        + "?range=1d&interval=5m"))["chart"]["result"][0]["meta"])
+
+
+def before_open(now=None):
+    """True between midnight and today's 09:30 ET regular open (by SPY's trading period). Before the open the
+    regular-session numbers are YESTERDAY's (owner check 2026-11-25: pre-market alerts said 'Same day: XBI +6.6%',
+    which was the day before)."""
+    m = _meta("SPY")
+    reg = ((m or {}).get("currentTradingPeriod") or {}).get("regular") or {}
+    return bool(reg.get("start")) and (now or time.time()) < reg["start"]
+
+
 def day_change(sym):
-    """Today's % change (fraction) vs the previous close, cached 5 minutes."""
-    def f():
-        m = json.loads(_get("https://query1.finance.yahoo.com/v8/finance/chart/" + urllib.parse.quote(sym)
-                            + "?range=1d&interval=5m"))["chart"]["result"][0]["meta"]
-        prev = m.get("chartPreviousClose") or m.get("previousClose")
-        return m["regularMarketPrice"] / prev - 1 if prev else None
-    return _cached("chg:" + sym, 300, f)
+    """Change (fraction) of the latest regular session vs the close before it."""
+    m = _meta(sym)
+    if not m:
+        return None
+    prev = m.get("chartPreviousClose") or m.get("previousClose")
+    return m["regularMarketPrice"] / prev - 1 if prev and m.get("regularMarketPrice") else None
 
 
 def sector(sym):
@@ -227,13 +242,15 @@ def market_line(sym, change, peer=None):
         return ""
     parts = [f"{ETF_NAME.get(etf, etf)} ({etf}) {s * 100:+.1f}%" if s is not None else "",
              f"market (SPY) {m * 100:+.1f}%" if m is not None else ""]
+    if before_open():
+        return "🌐 Last session: " + " · ".join(p for p in parts if p)
     verdict = " → <b>mostly the market</b>" if mostly_market(sym, change, peer) else ""
     return "🌐 Same day: " + " · ".join(p for p in parts if p) + verdict
 
 
 def mostly_market(sym, change, peer=None):
     """True if the stock moved the same way as its sector and not much more (no stock-specific story)."""
-    if change is None or not _us(sym):
+    if change is None or not _us(sym) or before_open():
         return False
     s = day_change(sector_etf(sym, peer))
     return bool(s) and abs(s) >= 0.01 and (s > 0) == (change > 0) and abs(change) <= MARKET_SHARE * abs(s)

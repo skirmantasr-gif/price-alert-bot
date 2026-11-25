@@ -314,6 +314,21 @@ def send_photo(url, chat=None):
 LAST_CHART = {}  # ticker -> last 1-minute chart (used for the volume check)
 
 
+def prev_close_of(meta, now=None):
+    """Previous regular-session close from a Yahoo chart meta.
+    Before today's regular open Yahoo's 1-day chart can still be yesterday's session, so chartPreviousClose is the
+    close from TWO sessions ago (owner check 2026-11-25: Nov 25 pre-market ORCL 'Day -6.9% vs $113.68' - the real
+    prev close was $109.50, so yesterday's move was counted twice). Before the open, the last regular price IS the
+    previous close."""
+    now = now or time.time()
+    reg = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
+    start, rp, rt = reg.get("start"), meta.get("regularMarketPrice"), meta.get("regularMarketTime")
+    if start and now < start and rp and rt and rt < start:
+        return float(rp)
+    p = meta.get("chartPreviousClose") or meta.get("previousClose")
+    return float(p) if p else None
+
+
 def fetch_price(ticker):
     """
     Latest price incl. pre-market / after-hours, from Yahoo Finance chart API.
@@ -326,7 +341,7 @@ def fetch_price(ticker):
     result = data["chart"]["result"][0]
     LAST_CHART[ticker] = result
     meta = result["meta"]
-    prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+    prev_close = prev_close_of(meta)
 
     price, ts = None, None
     closes = (result.get("indicators", {}).get("quote") or [{}])[0].get("close") or []
@@ -339,7 +354,7 @@ def fetch_price(ticker):
         # No trade yet in today's chart (e.g. right at 4am ET pre-market open): Yahoo's regularMarketPrice is
         # then yesterday's close, which would trigger a false alert against an after-hours reference.
         price = float(meta["regularMarketPrice"])
-        return price, (float(prev_close) if prev_close else None), "stale"
+        return price, prev_close, "stale"
 
     session = "regular"
     periods = meta.get("currentTradingPeriod") or {}
@@ -351,7 +366,7 @@ def fetch_price(ticker):
             session = "after-hours"
         elif reg and not (reg.get("start", 0) <= ts < reg.get("end", 0)):
             session = "closed"
-    return price, (float(prev_close) if prev_close else None), session
+    return price, prev_close, session
 
 
 # ---------------------------------------------------------------- state
@@ -813,7 +828,7 @@ def alert_context(ticker):
     if ch:
         try:
             meta = ch["meta"]
-            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            prev = prev_close_of(meta)
             q = (ch.get("indicators", {}).get("quote") or [{}])[0]
             closes = [c for c in q.get("close") or [] if c is not None]
             vols = [v for v in q.get("volume") or [] if v]

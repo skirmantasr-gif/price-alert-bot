@@ -161,7 +161,14 @@ def _p(x):
 
 
 def _d(iso):
-    return datetime.strptime(iso, "%Y-%m-%d").strftime("%a %b %d")
+    d = datetime.strptime(iso, "%Y-%m-%d")
+    # owner check 2026-11-25: a 2028 expiry read "Fri Dec 15", like next month - add the year when it's 300+ days out
+    return d.strftime("%a %b %d %Y" if (d.date() - date.today()).days > 300 else "%a %b %d")
+
+
+def _x(vol, oi):
+    """'6× the open positions', or 'brand-new contract' when there were (almost) none (was '1360×')."""
+    return "brand-new (almost no open positions before)" if oi < 10 else f"{vol / oi:.0f}× the open positions"
 
 
 def line(sym, s=None, short=False):
@@ -232,7 +239,7 @@ def deep_itm(u, price):
 
 
 def _m(x):
-    return f"${x / 1e6:.1f}M" if x >= 1e6 else f"${x / 1e3:.0f}k"
+    return f"${x / 1e6:.1f}M" if x >= 1e6 else f"${x / 1e3:.0f}k" if x >= 1e3 else "$0"
 
 
 def lean_line(ln):
@@ -293,8 +300,8 @@ class UnusualWatch:
                 continue          # only deep in-the-money churn: nothing worth a message
             lines = [f"🎲 <b>${html.escape(t)}</b> unusual options activity"]
             for exp, cp, k, vol, oi, usd in new:
-                lines.append(f"• {vol:,} {'calls' if cp == 'C' else 'puts'} {_p(k)} {_d(exp)} · {vol / max(oi, 1):.0f}× "
-                             f"the open positions · about {_m(usd)} traded")
+                lines.append(f"• {vol:,} {'calls' if cp == 'C' else 'puts'} {_p(k)} {_d(exp)} · {_x(vol, oi)} · "
+                             f"about {_m(usd)} traded")
             if deep:
                 lines.append(f"• +{len(deep)} deep in-the-money trade{'s' if len(deep) > 1 else ''} "
                              f"({_m(sum(u[5] for u in deep))}) left out — mostly closing/rolling old positions, not new bets")
