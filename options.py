@@ -219,7 +219,16 @@ def lean(rows, today=None, price=None):
     until = max(by_exp, key=by_exp.get)
     top = [u for u in side if u[0] == until]
     strike = sum(u[2] * u[5] for u in top) / sum(u[5] for u in top)
-    return {"dir": d, "until": until, "calls": calls, "puts": puts, "strike": strike}
+    return {"dir": d, "until": until, "calls": calls, "puts": puts, "strike": strike, "price": price}
+
+
+def deep_itm(u, price):
+    """Strike far on the 'already paid' side (calls 20%+ below / puts 20%+ above the price): the premium is mostly
+    intrinsic value, so big volume there is closing/rolling old positions or arbitrage - not a new bet
+    (owner 2026-11-25: ORCL $240 puts at $104 looked like a huge bet)."""
+    if not price:
+        return False
+    return (u[1] == "C" and u[2] < price * (1 - LEAN_MAX_AWAY)) or (u[1] == "P" and u[2] > price * (1 + LEAN_MAX_AWAY))
 
 
 def _m(x):
@@ -230,12 +239,13 @@ def lean_line(ln):
     if not ln:
         return ""
     money = f"calls {_m(ln['calls'])} vs puts {_m(ln['puts'])} today"
+    # owner 2026-11-25: "above ~$101" read as a price target - say plainly where the bets sit vs today's price
+    now = f"; price now {_p(ln['price'])}" if ln.get("price") else ""
+    where = f"(bets centred near {_p(ln['strike'])}{now})"
     if ln["dir"] == "up":
-        return (f"📈 <b>Options bets expect a RISE until {_d(ln['until'])}</b> — {money} "
-                f"(biggest bets on above ~{_p(ln['strike'])})")
+        return f"📈 <b>Options bets expect a RISE until {_d(ln['until'])}</b> — {money} {where}"
     if ln["dir"] == "down":
-        return (f"📉 <b>Options bets expect a FALL until {_d(ln['until'])}</b> — {money} "
-                f"(biggest bets on below ~{_p(ln['strike'])})")
+        return f"📉 <b>Options bets expect a FALL until {_d(ln['until'])}</b> — {money} {where}"
     return f"↔️ Options bets are mixed — {money}, no clear direction"
 
 
@@ -274,15 +284,20 @@ class UnusualWatch:
             if t in last_post and now - last_post[t] < POST_GAP:
                 continue          # new contracts wait for the next hourly message (they stay unseen until then)
             s = get(t)
-            new = [u for u in (s or {}).get("unusual", []) if f"{t}:{u[0]}:{u[1]}:{u[2]}" not in seen][:5]
-            if not new:
-                continue
-            for u in new:
+            fresh = [u for u in (s or {}).get("unusual", []) if f"{t}:{u[0]}:{u[1]}:{u[2]}" not in seen]
+            deep = [u for u in fresh if deep_itm(u, s.get("price"))]
+            new = [u for u in fresh if not deep_itm(u, s.get("price"))][:5]
+            for u in deep + new:      # extra non-deep contracts stay unseen for the next hourly message
                 seen[f"{t}:{u[0]}:{u[1]}:{u[2]}"] = 1
+            if not new:
+                continue          # only deep in-the-money churn: nothing worth a message
             lines = [f"🎲 <b>${html.escape(t)}</b> unusual options activity"]
             for exp, cp, k, vol, oi, usd in new:
                 lines.append(f"• {vol:,} {'calls' if cp == 'C' else 'puts'} {_p(k)} {_d(exp)} · {vol / max(oi, 1):.0f}× "
-                             f"the open positions · about ${usd / 1e3:,.0f}k traded")
+                             f"the open positions · about {_m(usd)} traded")
+            if deep:
+                lines.append(f"• +{len(deep)} deep in-the-money trade{'s' if len(deep) > 1 else ''} "
+                             f"({_m(sum(u[5] for u in deep))}) left out — mostly closing/rolling old positions, not new bets")
             ln = lean(s.get("unusual", []), price=s.get("price"))
             if ln:
                 lines.append(lean_line(ln))
