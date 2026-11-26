@@ -31,6 +31,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
+import catalysts
 import extras
 import impact
 
@@ -474,7 +475,7 @@ class MoversWatch:
         day = ny.strftime("%Y-%m-%d")
         hm = ny.strftime("%H:%M")
         if ny.weekday() < 5:
-            if mv.get("pre_day") != day and PRE_ET <= hm < "09:25":
+            if mv.get("pre_day") != day and PRE_ET <= hm < "09:25" and catalysts.trading_day(ny.date()):
                 mv["pre_day"] = day
                 self._start("pre", self._pre_job, day)
                 return True

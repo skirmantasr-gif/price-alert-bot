@@ -367,14 +367,24 @@ def daily_lines(tickers):
         [f"• {x}" for x in out]
 
 
+def trading_day(d):
+    """NYSE trading day (weekday and not a market holiday). On holidays Cboe still serves the last session's
+    volumes, so without this the bot re-posted yesterday's contracts as new (Thanksgiving 2026-11-26)."""
+    try:
+        import catalysts
+        return catalysts.trading_day(d)
+    except Exception:
+        return d.weekday() < 5
+
+
 def market_open_ny():
-    """Rough regular-session check (holidays not handled: no data then anyway)."""
+    """Rough regular-session check: trading day (holidays skipped), 09:30-16:00 New York."""
     try:
         from zoneinfo import ZoneInfo
         n = datetime.now(ZoneInfo("America/New_York"))
     except Exception:
         return False
-    return n.weekday() < 5 and "09:30" <= n.strftime("%H:%M") < "16:00"
+    return trading_day(n.date()) and "09:30" <= n.strftime("%H:%M") < "16:00"
 
 
 # ---------------------------------------------------------------- 📼 option history before FDA dates
@@ -433,7 +443,7 @@ class HistoryWatch:
 
     def check(self, state):
         n = self.now()
-        if n is None or n.weekday() >= 5 or not ("15:30" <= n.strftime("%H:%M") < "20:00"):
+        if n is None or not trading_day(n.date()) or not ("15:30" <= n.strftime("%H:%M") < "20:00"):
             return False
         today = n.date()
         day = today.isoformat()

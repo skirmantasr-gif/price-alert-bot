@@ -612,6 +612,27 @@ def same_event(a, b):
     return both >= 1 and both >= min(2, len(a), len(b))
 
 
+# Deal verbs, news-agency names and company-name suffixes: shared by unrelated takeover headlines, so they don't
+# show that two 🎯 headlines are about the same bidder
+DEAL_WORDS = {"talks", "acquire", "acquires", "acquiring", "acquisition", "buy", "buys", "buyout", "bid", "bids",
+              "offer", "offers", "deal", "merger", "merge", "takeover", "tender", "agrees", "agreement", "sale",
+              "sell", "explore", "explores", "exploring", "reportedly", "report", "reports", "sources", "source",
+              "people", "familiar", "bloomberg", "reuters", "wsj", "journal", "street", "wall", "holdings", "group",
+              "partners", "capital", "international", "global", "systems", "technologies", "therapeutics",
+              "pharmaceuticals", "billion", "million", "per", "cash", "all", "stock", "approach", "approached"}
+
+
+def same_deal(a, b):
+    """Two 🎯 takeover headlines about one stock name the same bidder: "Targa Resources in Talks to Acquire
+    Kinetik" / "Targa in talks to buy Kinetik, Bloomberg says" / "Targa is in talks to buy Permian pipeline
+    operator Kinetik" (KNTK posted 4× on 2026-11-26). One shared name is enough — unless the new headline carries a
+    price the earlier one didn't (a raised or firm offer is real news)."""
+    a, b = {_amt(w) for w in a}, {_amt(w) for w in b}
+    if not (a & b) - DEAL_WORDS:
+        return False
+    return not {w for w in a if w.startswith("$")} - b
+
+
 def news_key(title):
     """Same story from several editions ("... By Investing.com", "... - Investing.com India") = one key."""
     title = re.sub(r"\s+(by|-|\u2013|\|)\s+[\w .&]{2,40}$", "", title.strip(), flags=re.I)
@@ -1026,6 +1047,12 @@ class BuyoutWatch:
                          "<i>Public sale signals came before many past buyouts, but most reviews end without a deal "
                          "or at a small premium. Not advice.</i>"), True if rumour and not x.get("hist") else None)
             extras.remember(x["t"], f"🎯📣 ${x['t']} {x['title']}", x["link"])
+            if not control:   # later 🎯 headlines of the same story (other sites) are repeats of this post
+                ew = event_words(x["title"], x["t"], (r or {}).get("name") or x.get("name") or "")
+                if ew:
+                    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    evl = bo.setdefault("ev", {}).setdefault(x["t"], [])
+                    evl[:] = (evl + [[day, sorted(ew), True]])[-20:]
             if state is not None and not control:   # scored in the 🎓 review (not traded: paper.NOT_TRADED)
                 try:
                     import learn
@@ -1189,7 +1216,8 @@ class BuyoutWatch:
             ev[t] = [e for e in ev.get(t, []) if e[0] >= cut_ev]
             # same story already posted (another site's headline). A 🎯 takeover headline only repeats an earlier
             # 🎯 one (owner check 2026-11-25: TSQ "rejects $37M bid" posted 4× in 12 h with slightly different words)
-            if any(same_event(ew, e[1]) and (not hit or (len(e) > 2 and e[2])) for e in ev[t]):
+            if any((same_event(ew, e[1]) or (hit and same_deal(ew, e[1]))) and (not hit or (len(e) > 2 and e[2]))
+                   for e in ev[t]):
                 continue
             if ew:
                 ev[t] = (ev[t] + [[today, sorted(ew), bool(hit)]])[-20:]
