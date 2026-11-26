@@ -78,6 +78,10 @@ try:
 except ImportError:  # phone copy without predict.py
     predict = None
 try:
+    import holdings
+except ImportError:
+    holdings = None
+try:
     import activist
 except ImportError:  # phone copy without activist.py
     activist = None
@@ -1000,6 +1004,10 @@ def main():
             fda_news = catalysts.FdaNewsWatch(send_telegram, TICKERS)
     preds = (predict.PredictionWatch(lambda text, silent: send_telegram(text, silent, PAPER_CHAT_ID or None))
              if predict and HEARTBEAT_ROLE != "phone" and predict.PredictionWatch.enabled() else None)
+    # 💼 real holdings (private file on the server): its own chat if set, else the 🧪 channel
+    hold_chat = os.environ.get("HOLDINGS_CHAT_ID", "").strip() or PAPER_CHAT_ID or None
+    hold = (holdings.HoldingsWatch(lambda text, silent: send_telegram(text, silent, hold_chat))
+            if holdings and HEARTBEAT_ROLE != "phone" and holdings.HoldingsWatch.enabled() else None)
     try:
         import marketodds
         mkt_odds = (marketodds.MarketOdds(lambda text, silent: send_telegram(text, silent, PAPER_CHAT_ID or None), TICKERS)
@@ -1060,6 +1068,8 @@ def main():
             checks.append(("Forecast scoring", preds.check))
         if mkt_odds:
             checks.append(("Market odds", mkt_odds.check))
+        if hold:
+            checks.append(("Holdings", hold.check))
         if act_watch:
             checks.append(("Activist watch", act_watch.check))
         if chat_check:
