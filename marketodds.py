@@ -107,6 +107,17 @@ def outcome(state, key, preds):
     return None
 
 
+def claude_line(preds, key, p):
+    """Claude's own odds for the same FDA date next to the market's (owner 2026-11-26: one card, not two places)."""
+    mine = next((x for x in preds if x.get("fda") == key and isinstance(x.get("p"), (int, float))), None)
+    if not mine:
+        return ""
+    gap = (mine["p"] - p) * 100
+    side = ("Claude is more hopeful than the market" if gap >= 10 else
+            "Claude is less hopeful than the market" if gap <= -10 else "about the same as the market")
+    return f"🎯 Claude said {mine['p'] * 100:.0f}% on {html.escape(mine.get('made', '?'))} ({gap:+.0f} pts: {side})\n"
+
+
 def _cutoff(state, key):
     fc = state.get("_fdacal") or {}
     ats = [v["at"] for k in ("decided", "missed", "shock") for kk, v in (fc.get(k) or {}).items() if kk == key]
@@ -172,6 +183,7 @@ class MarketOdds:
             log.info("Market odds: estimate saved")
             self.send(f"📈 <b>Market-implied odds</b> · <b>${html.escape(rec['t'])}</b> FDA date "
                       f"{ev.strftime('%a %b %d')}: <b>~{est['p'] * 100:.0f}% approval</b>\n"
+                      + claude_line(preds, key, est["p"]) +
                       f"From options on {day}: ±{st:.0f}% priced to {exp} at ${px:,.2f}; if rejected, assumed fall "
                       f"≈ −{est['d'] * 100:.0f}% (toward cash per share). Rough model: scored after the decision "
                       f"next to Claude's 🎯 odds.", True)

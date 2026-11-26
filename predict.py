@@ -59,10 +59,26 @@ def close_on(ticker, day):
     return None
 
 
-def resolve(x, now, price=close_on):
+def fda_result(state, key):
+    """(outcome, note) for a forecast linked to an FDA date ("fda": "CAPR:2026-11-22"), from the bot's own FDA
+    marks: approved = YES; CRL / rejection = NO; the FDA missing or extending the date = NO (the claims say "at /
+    by the PDUFA"). None while nothing is known. Owner 2026-11-26: BBIO + COGT approvals sat unfilled for days."""
+    fc = (state or {}).get("_fdacal") or {}
+    dec = (fc.get("decided") or {}).get(key)
+    if dec and isinstance(dec.get("approved"), bool):
+        return dec["approved"], ("FDA approved" if dec["approved"] else "FDA did not approve") + f" ({dec.get('at', '?')})"
+    miss = (fc.get("missed") or {}).get(key)
+    if miss:
+        return False, f"FDA missed / extended the date ({miss.get('at', '?')})"
+    return None
+
+
+def resolve(x, now, price=close_on, state=None):
     """(outcome bool, note) or None while open."""
     if isinstance(x.get("outcome"), bool):
         return x["outcome"], x.get("note", "")
+    if x.get("fda"):
+        return fda_result(state, x["fda"])
     r = x.get("rule") or {}
     if r.get("type") not in ("close_above", "close_below") or not x.get("due"):
         return None
@@ -122,7 +138,7 @@ class PredictionWatch:
             if x["id"] in st:
                 continue
             try:
-                r = resolve(x, now, self.price)
+                r = resolve(x, now, self.price, state)
             except Exception as e:
                 log.info("Prediction check failed (%s)", type(e).__name__)
                 continue

@@ -338,7 +338,13 @@ class FdaCalendar:
 MISSED_RE = re.compile(r"will not (be able to )?(meet|take action|act)|unable to (meet|complete|take action)|"
                        r"not (be able to )?(meet|complete) (its|the) (review|PDUFA|goal|target)|"
                        r"\bmiss(es|ed|ing)?\b[\w\s'’-]{0,40}?\b(PDUFA|goal date|target action|action date|deadline)|"
-                       r"(PDUFA|goal|action) date (is|was) missed", re.I)
+                       r"(PDUFA|goal|action) date (is|was) missed|"
+                       # 2026-11-26 check: "VRTX Down as FDA Extends Review Timeline for Povetacicept BLA" left the Nov 30
+                       # date standing (a 3-month extension = date missed). "FDA delays decision" stays unmatched on
+                       # purpose (tests/test_funds_missed_holidays: news wording, not an FDA notice)
+                       r"\bFDA (extends|extended)\b[\w\s'’-]{0,30}?\b(review|PDUFA|goal|action|timeline)|"
+                       r"\b(review|PDUFA|goal date|action date)( timeline| date| period)? (is |was |has been )?"
+                       r"(extended|delayed|pushed back)\b|\breview extension\b", re.I)
 MISSED_WINDOW = (-14, 45)    # events from 14 days ago to 45 days ahead can be the one meant
 
 
