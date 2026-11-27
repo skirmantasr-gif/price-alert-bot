@@ -116,7 +116,7 @@ class Shock(unittest.TestCase):
         today = date(2026, 11, 20)
         m = catalysts.shock_check(st, "CAPR", -0.40, "after-hours", today)
         self.assertIn("💊⚡", m)
-        self.assertIn("REJECTED", m)
+        self.assertIn("approval sold on the news", m)   # 2026-11-27: no "probably REJECTED" guess
         self.assertIn("in 2 days", m)
         self.assertEqual(catalysts.shock_check(st, "CAPR", -0.60, "after-hours", today), "")   # no repeat
         self.assertIn("decision probably out", extras._fda_status(st, st["_cal"][0]))
@@ -131,7 +131,7 @@ class Shock(unittest.TestCase):
 
     def test_up_move(self):
         st = _state("SVRA")
-        self.assertIn("APPROVED", catalysts.shock_check(st, "SVRA", 0.35, "pre-market", date(2026, 11, 22)))
+        self.assertIn("check the news", catalysts.shock_check(st, "SVRA", 0.35, "pre-market", date(2026, 11, 22)))
 
 
 if __name__ == "__main__":
