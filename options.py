@@ -57,6 +57,9 @@ def _get(url, timeout=20):
     return data
 
 
+LAST_TS = {}                    # symbol -> CBOE's own data time of the last file loaded ('YYYY-MM-DD HH:MM' NY)
+
+
 class Stale(Exception):
     """CBOE served an old file (owner 2026-11-27: PYPD's file said 2026-11-23 15:31 for four days, so 📼 saved the
     same $5.91 / ±38% snapshot on Nov 23–26 while the stock really went 5.77 → 5.55 → 4.57)."""
@@ -86,6 +89,7 @@ def load(sym, min_day=None):
         raise Stale(ts.isoformat())
     if min_day and ts:
         _fresh("ok", sym)
+    LAST_TS[sym] = ts.strftime("%Y-%m-%d %H:%M") if ts else None
     return parse(chain)
 
 
@@ -458,6 +462,17 @@ def snapshot(price, iv30, rows, today=None):
             "unu": [[u[0], u[1], u[2], u[3], u[4], round(u[5])] for u in unusual(rows, today)[:3]]}
 
 
+def _snap_start(d):
+    """30 min before the close: 15:30, or 12:30 on a 13:00 half-day."""
+    try:
+        import catalysts
+        h, m = map(int, catalysts.close_hhmm(d).split(":"))
+    except Exception:
+        h, m = 16, 0
+    t = h * 60 + m - 30
+    return f"{t // 60:02d}:{t % 60:02d}"
+
+
 def _ny_now():
     try:
         from zoneinfo import ZoneInfo
@@ -486,7 +501,7 @@ class HistoryWatch:
 
     def check(self, state):
         n = self.now()
-        if n is None or not trading_day(n.date()) or not ("15:30" <= n.strftime("%H:%M") < "20:00"):
+        if n is None or not trading_day(n.date()) or not (_snap_start(n.date()) <= n.strftime("%H:%M") < "20:00"):
             return False
         today = n.date()
         day = today.isoformat()
@@ -514,6 +529,9 @@ class HistoryWatch:
                 if not price or not rows:
                     continue
                 rec["snaps"][day] = snapshot(price, iv30, rows, today)
+                # the data's own time, so old numbers can be told apart later (owner 2026-11-27 "2.")
+                rec["snaps"][day]["at"] = (n.strftime("%Y-%m-%d %H:%M") if src or got
+                                           else LAST_TS.get(rec["t"]) or None)
                 if src:
                     rec["snaps"][day]["src"] = src
                 changed = True

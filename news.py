@@ -612,13 +612,26 @@ def sec_cik(ticker):
     return _cik_cache.get(ticker)
 
 
+def _sec_fresh(ticker, err=None):
+    try:
+        import fresh
+        fresh.bad("SEC filings", ticker, err) if err else fresh.ok("SEC filings", ticker)
+    except Exception:
+        pass
+
+
 def sec_filings(ticker):
     import json
     cik = sec_cik(ticker)
     if not cik:
         return []
-    data = json.loads(_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json",
-                           {"User-Agent": f"price-alert-bot {SEC_CONTACT}", "Accept": "application/json"}))
+    try:
+        data = json.loads(_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json",
+                               {"User-Agent": f"price-alert-bot {SEC_CONTACT}", "Accept": "application/json"}))
+    except Exception as e:
+        _sec_fresh(ticker, type(e).__name__)
+        raise
+    _sec_fresh(ticker)
     r = data.get("filings", {}).get("recent", {})
     out = []
     for i in range(min(40, len(r.get("accessionNumber", [])))):

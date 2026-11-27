@@ -5,6 +5,7 @@ Sources report what they see from deep inside the code (no state needed there):
     fresh.ok("CBOE options", sym)                     data was current
     fresh.bad("CBOE options", sym, "2026-11-23 15:31") data was old
     fresh.beat("News feeds")                          something fresh arrived (for sources judged by silence)
+    fresh.bad("SEC filings", sym, "HTTPError")        a fetch failed (ok() after a success)
 FreshWatch.check(state) merges that into state["_fresh"] and sends ONE ⚠️ when a source goes stale and ✅ when it
 recovers; line(state) is the ☀️ daily-check line. Rules per source in RULES:
     min_bad   distinct stale symbols in the last WINDOW_H hours before it counts as stale
@@ -28,6 +29,9 @@ RULES = {
                                                         "those stocks (old numbers are thrown away)"},
     "Yahoo prices": {"min_bad": 3, "ratio": 0.5, "fix": "price alerts may be late or missing"},
     "News feeds": {"silent_h": 24, "fix": "news / FDA headlines may be missing"},
+    # SEC filings come at random times, so judge the fetches, not the news (owner 2026-11-27 "3.")
+    "SEC filings": {"min_bad": 3, "ratio": 0.5, "silent_ok_h": 24, "word": "failed lookups", "head": "FAILING",
+                    "fix": "8-K / Form 4 / 13D alerts and 🤖 filing summaries may be missing"},
 }
 
 _lock = threading.Lock()
@@ -68,6 +72,7 @@ def merge(state, now=None):
             r["beat"] = max(ts, r.get("beat") or 0)
         elif kind == "ok":
             r["ok"][sym] = ts
+            r["last_ok"] = max(ts, r.get("last_ok") or 0)
             r["bad"].pop(sym, None)           # fresh again
         else:
             r["bad"][sym] = [ts, det]
@@ -98,13 +103,16 @@ def stale(state, src, now=None):
         if b and now - b > rule["silent_h"] * 3600 and _weekday_daytime(now):
             return f"nothing new for {int((now - b) // 3600)} h"
         return ""
+    lo = r.get("last_ok")
+    if "silent_ok_h" in rule and lo and now - lo > rule["silent_ok_h"] * 3600 and _weekday_daytime(now):
+        return f"no successful fetch for {int((now - lo) // 3600)} h"
     n_bad = len(r["bad"])
     total = n_bad + len(r["ok"])
     if n_bad >= rule.get("min_bad", 3) and total and n_bad / total >= rule.get("ratio", 0):
         egs = sorted(r["bad"].items(), key=lambda kv: kv[1][0], reverse=True)
         names = ", ".join(f"{html.escape(k)}" + (f" ({html.escape(v[1])})" if v[1] else "") for k, v in egs[:3])
         more = f" +{n_bad - 3} more" if n_bad > 3 else ""
-        return f"old data for {n_bad} of {total} stocks: {names}{more}"
+        return f"{rule.get('word', 'old data')} for {n_bad} of {total} stocks: {names}{more}"
     return ""
 
 
@@ -133,7 +141,7 @@ class FreshWatch:
                 r["alerted"] = True
                 changed = True
                 log.info("Freshness: source went stale")
-                self.send(f"⏳⚠️ <b>{html.escape(src)}: serving OLD data</b> — {why}\n"
+                self.send(f"⏳⚠️ <b>{html.escape(src)}: {rule.get('head', 'serving OLD data')}</b> — {why}\n"
                           f"Effect: {rule['fix']}. Nothing to do unless it lasts days; the ☀️ daily check repeats it.",
                           True)
             elif not why and r.get("alerted"):

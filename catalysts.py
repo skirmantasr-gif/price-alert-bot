@@ -532,6 +532,15 @@ def trading_day(d):
     return d.weekday() < 5 and d.isoformat() not in NYSE_HOLIDAYS
 
 
+def close_hhmm(d):
+    """NYSE closing time 'HH:MM' (New York) on trading day d: 13:00 on the day after Thanksgiving, Dec 24 and
+    Jul 3 (when they are trading days), else 16:00 (owner 2026-11-27: the 📼 snapshot missed the Nov 27 half-day)."""
+    thanksgiving = max(date(d.year, 11, x) for x in range(22, 29) if date(d.year, 11, x).weekday() == 3)
+    if d in (thanksgiving + timedelta(days=1), date(d.year, 12, 24), date(d.year, 7, 3)) and trading_day(d):
+        return "13:00"
+    return "16:00"
+
+
 def last_trading_before(d):
     x = d - timedelta(days=1)
     while not trading_day(x):
