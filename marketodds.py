@@ -181,6 +181,8 @@ class MarketOdds:
             mk[key] = {"t": rec["t"], "event": rec["event"], "made": day, "px": px, "move": st, "exp": exp, **est}
             changed = True
             log.info("Market odds: estimate saved")
+            if outcome(state, key, preds) is not None:
+                continue      # owner 2026-11-27 ("pypd already approved"): decided already → only the scored post
             self.send(f"📈 <b>Market-implied odds</b> · <b>${html.escape(rec['t'])}</b> FDA date "
                       f"{ev.strftime('%a %b %d')}: <b>~{est['p'] * 100:.0f}% approval</b>\n"
                       + claude_line(preds, key, est["p"]) +

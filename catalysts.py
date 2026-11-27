@@ -382,6 +382,9 @@ DECIDED_RE = re.compile(
     r"\bFDA (has |finally )?(approves|approved|grants|granted|clears|cleared)\b|"
     r"\bapproval (from|by) (the )?(U\.?S\.? )?FDA\b|"
     r"\b(receives?|received|wins?|won|secures?|secured|gets?|got|obtains?|obtained) (U\.?S\.? )?FDA (accelerated |full )?approval|"
+    # Owner 2026-11-27: "PolyPid Announces FDA Approval of BACFENSSI®" (Nov 25) was missed → 📈 odds posted after it
+    r"\b(announces?|announced|achieves?|achieved|earns?|earned|receipt of) (the )?(U\.?S\.? )?FDA "
+    r"(accelerated |full |traditional )?approval\b|"
     r"complete response letter|\bCRL\b|"
     r"\b(FDA|agency) (declines|declined|refuses|refused) to approve|"
     r"\bFDA (rejects|rejected|turns (back|down)|turned (back|down))\b", re.I)
