@@ -82,8 +82,19 @@ def load(sym, min_day=None):
     chain = json.loads(_get(URL.format(urllib.parse.quote(sym))))
     ts = data_time(chain)
     if min_day and ts and ts.date() < min_day:
+        _fresh("bad", sym, ts.strftime("%b %d %H:%M"))
         raise Stale(ts.isoformat())
+    if min_day and ts:
+        _fresh("ok", sym)
     return parse(chain)
+
+
+def _fresh(kind, sym, detail=""):
+    try:
+        import fresh
+        fresh.bad("CBOE options", sym, detail) if kind == "bad" else fresh.ok("CBOE options", sym)
+    except Exception:
+        pass
 
 
 def monthly_expiry(d):
@@ -461,8 +472,9 @@ class HistoryWatch:
     {"TICKER:YYYY-MM-DD": {"t", "event", "label", "snaps": {day: snapshot}}} (the event date is kept here because
     _cal drops passed events)."""
 
-    def __init__(self, tickers, fetch=None, now=None):
+    def __init__(self, tickers, fetch=None, now=None, backup=None):
         self.tickers = set(tickers)
+        self.backup = backup            # ibopts.Fallback: IBKR delayed quotes when CBOE's file is old
         self.fetch = fetch or (lambda sym: load(sym, self.now().date()))     # a snapshot must be today's data
         self.now = now or _ny_now
         self.last_day = None
@@ -496,15 +508,24 @@ class HistoryWatch:
             if not (-HIST_BEFORE <= (today - ev).days <= HIST_AFTER) or day in rec["snaps"]:
                 continue
             try:
-                price, iv30, rows = self.fetch(rec["t"])
+                got = self.backup.result(rec["t"], today) if self.backup else None
+                src = "ibkr" if got else None
+                price, iv30, rows = got or self.fetch(rec["t"])
                 if not price or not rows:
                     continue
                 rec["snaps"][day] = snapshot(price, iv30, rows, today)
+                if src:
+                    rec["snaps"][day]["src"] = src
                 changed = True
-                log.info("Options history: saved %s (%s days to %s)", rec["t"], (ev - today).days, rec["label"])
+                log.info("Options history: saved %s (%s days to %s)%s", rec["t"], (ev - today).days, rec["label"],
+                         " from IBKR delayed quotes" if src else "")
             except Stale:
-                log.info("Options history: %s data is old, retry in 30 min", rec["t"])
-                self.last_day, self.retry_at = None, time.monotonic() + 1800
+                if self.backup:
+                    self.backup.request(rec["t"])
+                    log.info("Options history: %s CBOE data is old, asking IBKR (retry in 10 min)", rec["t"])
+                else:
+                    log.info("Options history: %s data is old, retry in 30 min", rec["t"])
+                self.last_day, self.retry_at = None, time.monotonic() + (600 if self.backup else 1800)
             except Exception as e:
                 log.info("Options history: %s unavailable (%s)", rec["t"], type(e).__name__)
         if len(h) > HIST_MAX_EVENTS:

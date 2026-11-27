@@ -469,8 +469,9 @@ def shock_check(state, t, day_chg, session, today):
         log.info("FDA shock message")
         return (f"💊⚡ <b>${html.escape(t)} {'UP' if up else 'DOWN'} {day_chg * 100:+.0f}%</b> ({session}) — its FDA "
                 f"decision date is {d.strftime('%a %b %d')} ({when})\n"
-                f"A move this big this close to the date usually means the decision (or a leak) is out: "
-                f"{'up → probably APPROVED' if up else 'down → probably REJECTED (CRL) or DELAYED'}. "
+                f"A move this big this close to the date usually means the decision (or a leak) is out — "
+                f"<b>check the news</b>: the direction alone doesn't tell which way it went "
+                f"({'up is usually approval, but a rejected rival or a buyout also lifts a stock' if up else 'down can be a rejection or delay, but also an approval sold on the news (PYPD −18% on its Nov 25 approval)'}). "
                 f"The news usually follows within an hour.\n<i>Not advice.</i>")
     return ""
 
@@ -632,6 +633,19 @@ def scorecard(rows, kind):
             f"options priced in {big} of {len(r)} · typical move = {ratio:.1f}× the priced move")
 
 
+def outcome_tally(rows, approved):
+    """'After approvals (3 so far): fell in 2 of 3 · middle move −6%' — does being right about the FDA pay?"""
+    r = [x for x in rows if x.get("kind") == "fda" and x.get("approved") is approved]
+    if not r:
+        return ""
+    down = sum(1 for x in r if x["move"] < 0)
+    mid = statistics.median(x["move"] for x in r) * 100
+    word = "approvals" if approved else "rejections"
+    note = " · small sample, keep collecting" if len(r) < 10 else ""
+    return (f"📒 After {word} ({len(r)} so far): fell in {down} of {len(r)} · middle move {mid:+.0f}% on the "
+            f"reaction day{note}")
+
+
 class ResultWatch:
     def __init__(self, send_main, send_other, tickers, pattern=None, bars=None):
         self.send_main, self.send_other = send_main, send_other
@@ -653,9 +667,15 @@ class ResultWatch:
         res = state.setdefault("_evres", {"done": [], "rows": []})
         changed = False
         for key, rec in list(h.items()):
-            if key in res["done"] or rec["event"] > today.isoformat():
+            if key in res["done"]:
                 continue
-            if (today - datetime.strptime(rec["event"], "%Y-%m-%d").date()).days > 14:
+            # owner 2026-11-27 ("4."): PYPD was approved Nov 25, three days before its Nov 28 date → measure the
+            # reaction from the day the decision came out, and record which way it went
+            dec = decided_keys(state).get(key) if (rec.get("kind") or "fda") == "fda" else None
+            ev_day = min(rec["event"], dec["at"]) if dec and dec.get("at") else rec["event"]
+            if ev_day > today.isoformat():
+                continue
+            if (today - datetime.strptime(ev_day, "%Y-%m-%d").date()).days > 14:
                 res["done"].append(key)          # too late to say anything useful
                 changed = True
                 continue
@@ -664,7 +684,7 @@ class ResultWatch:
             except Exception as e:
                 log.info("Event result: prices unavailable (%s)", type(e).__name__)
                 continue
-            r = reaction(bars, rec["event"], today)
+            r = reaction(bars, ev_day, today)
             if not r:
                 continue
             k, vr = r
@@ -676,6 +696,10 @@ class ResultWatch:
                 kind = "fda_missed"     # no decision that day: not scored with the real decisions
             row = {"t": rec["t"], "kind": kind, "event": rec["event"], "day": day, "move": round(move, 4),
                    "imp": imp, "pc": round(pc, 2) if pc else None, "pre5": round(pre5, 4), "vr": round(vr, 1)}
+            if kind == "fda" and dec and isinstance(dec.get("approved"), bool):
+                row["approved"] = dec["approved"]
+                row["early"] = (datetime.strptime(rec["event"], "%Y-%m-%d").date()
+                                - datetime.strptime(ev_day, "%Y-%m-%d").date()).days
             res["rows"] = (res["rows"] + [row])[-300:]
             res["done"] = (res["done"] + [key])[-500:]
             changed = True
@@ -689,6 +713,10 @@ class ResultWatch:
             row["kind"], "FDA decision")
         d = datetime.strptime(row["day"], "%Y-%m-%d").strftime("%a %b %d")
         ev = datetime.strptime(rec["event"], "%Y-%m-%d").strftime("%a %b %d")
+        if "approved" in row:
+            what += " — APPROVED ✅" if row["approved"] else " — REJECTED / CRL ❌"
+            if row.get("early", 0) > 0:
+                ev += f"; it came {row['early']} day{'s' if row['early'] > 1 else ''} early"
         lines = [f"📼 <b>${html.escape(rec['t'])}</b> after its {what} ({ev}): <b>{row['move'] * 100:+.1f}%</b> on {d} "
                  f"(${before:,.2f} → ${after:,.2f}, {row['vr']:.1f}× normal volume)"]
         if row["imp"]:
@@ -710,6 +738,8 @@ class ResultWatch:
         sc = scorecard(rows, row["kind"])
         if sc:
             lines.append(sc)
+        if "approved" in row:
+            lines.append(outcome_tally(rows, row["approved"]))
         lines.append("<i>Recorded to learn how well options price these events. Not advice.</i>")
         return "\n".join(lines)
 
@@ -727,6 +757,14 @@ FDA_NEWS = re.compile(r"\bFDA\b|approv\w*|PDUFA|complete response|\bCRL\b|action
                       r"\b(BLA|NDA|sNDA|sBLA)\b|refus\w*|reject\w*|delay\w*|extend\w*|will not (meet|take action)", re.I)
 FDA_LOUD = re.compile(r"approv\w*|complete response|\bCRL\b|reject\w*|refus\w*|will not (meet|take action)|"
                       r"delay\w*|miss\w*", re.I)
+
+
+QUOTE_SECONDS = 300
+
+
+def _near_fda(state, t, today):
+    return any(SHOCK_WINDOW[0] <= (datetime.strptime(iso, "%Y-%m-%d").date() - today).days <= SHOCK_WINDOW[1]
+               for iso in _fda_dates(state, t))
 
 
 def _rss(url):
@@ -754,8 +792,12 @@ class FdaNewsWatch:
     FDA-related Yahoo headlines (loud for a decision, rejection or delay) and new 8-K / 6-K filings (quiet, with
     the 🤖 summary). The first look at a stock only learns what is already out there."""
 
-    def __init__(self, send, tickers, headlines=None, filings_of=None, summarize=None):
+    def __init__(self, send, tickers, headlines=None, filings_of=None, summarize=None, quote=None):
         self.send, self.watch = send, set(tickers)
+        # 💊⚡ big-move check for these off-watchlist stocks too (owner 2026-11-27 "2."): PYPD −18% on its Nov 25
+        # approval went unseen. quote(t) -> (price, prev close, session) like bot.fetch_price.
+        self.quote = quote
+        self.last_quote = float("-inf")
         self.headlines = headlines or (lambda t: _rss("https://feeds.finance.yahoo.com/rss/2.0/headline?" +
                                                       urllib.parse.urlencode({"s": t, "region": "US", "lang": "en-US"})))
         self.filings_of = filings_of
@@ -774,6 +816,24 @@ class FdaNewsWatch:
                 out.setdefault(e["t"], e)
         return out
 
+    def _shock(self, state, t):
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        if not _near_fda(state, t, today):
+            return False
+        try:
+            price, prev, session = self.quote(t)
+        except Exception as ex:
+            log.info("FDA shock: price unavailable (%s)", type(ex).__name__)
+            return False
+        if not price or not prev or session == "stale":
+            return False
+        msg = shock_check(state, t, price / prev - 1, session, today)
+        if msg:
+            self.send(msg)
+            return True
+        return False
+
     def check(self, state, now=None):
         mono = time.monotonic()
         if now is None and mono - self.last < NEWS_SECONDS:
@@ -788,7 +848,12 @@ class FdaNewsWatch:
             self.last_sec = mono
         from datetime import timezone
         cut = datetime.now(timezone.utc) - timedelta(hours=NEWS_MAX_AGE_H)
+        do_quote = self.quote is not None and (mono - self.last_quote >= QUOTE_SECONDS or now is not None)
+        if do_quote:
+            self.last_quote = mono
         for t, e in self.tickers(state, now.date()).items():
+            if do_quote:
+                changed |= self._shock(state, t)
             first = t not in init
             when = datetime.strptime(e["date"], "%Y-%m-%d").strftime("%a %b %d")
             try:

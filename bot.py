@@ -370,6 +370,17 @@ def fetch_price(ticker):
             session = "after-hours"
         elif reg and not (reg.get("start", 0) <= ts < reg.get("end", 0)):
             session = "closed"
+        # ⏳ during regular hours the newest bar should be recent (fresh.py judges across all stocks)
+        reg, now_s = periods.get("regular", {}), time.time()
+        if reg and reg.get("start", 0) + 3600 <= now_s < reg.get("end", 0):
+            try:
+                import fresh
+                if now_s - ts > 3600:
+                    fresh.bad("Yahoo prices", ticker, datetime.fromtimestamp(ts, timezone.utc).strftime("%H:%M UTC"))
+                else:
+                    fresh.ok("Yahoo prices", ticker)
+            except Exception:
+                pass
     return price, prev_close, session
 
 
@@ -970,7 +981,7 @@ def main():
                if HEARTBEAT_ROLE != "phone" and insights.HourlyInsights.enabled(TICKERS) else None)
     heartbeat = extras.Heartbeat(
         HEARTBEAT_ROLE, telegram_api, send_telegram, thirdparty_ok=lambda: (thirdparty_on if TP_COOKIE else None),
-        daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st), netgate.status_line()]
+        daily_extra=(lambda st: ([mood.line(mood.get(st, http_get_json))] if mood else []) + [extras.fail_line(st), netgate.status_line()] + ([fresh_mod.line(st)] if fresh_mod else [])
                      + (options.daily_lines(TICKERS) if options else [])
                      + (context.daily_lines(TICKERS) if context else []))
         if HEARTBEAT_ROLE != "phone" else None)
@@ -989,7 +1000,12 @@ def main():
         threading.Thread(target=lambda: context.daily_lines(TICKERS), daemon=True).start()
     opt_watch = (options.UnusualWatch(send_telegram, TICKERS)
                  if options and HEARTBEAT_ROLE != "phone" and options.UnusualWatch.enabled() else None)
-    opt_hist = (options.HistoryWatch(TICKERS)
+    try:
+        import ibopts
+        _ib_backup = ibopts.Fallback() if ibopts.ON else None
+    except ImportError:
+        _ib_backup = None
+    opt_hist = (options.HistoryWatch(TICKERS, backup=_ib_backup)
                 if options and HEARTBEAT_ROLE != "phone" and options.HistoryWatch.enabled() else None)
     fda_cal = (catalysts.FdaCalendar(send_telegram, TICKERS)
                if catalysts and HEARTBEAT_ROLE != "phone" and catalysts.FdaCalendar.enabled() else None)
@@ -999,9 +1015,9 @@ def main():
             import filings as _filings
             fda_news = catalysts.FdaNewsWatch(send_telegram, TICKERS,
                                               filings_of=_news_sec_filings if os.environ.get("SEC_CONTACT", "").strip() else None,
-                                              summarize=_filings.summarize)
+                                              summarize=_filings.summarize, quote=fetch_price)
         except Exception:
-            fda_news = catalysts.FdaNewsWatch(send_telegram, TICKERS)
+            fda_news = catalysts.FdaNewsWatch(send_telegram, TICKERS, quote=fetch_price)
     preds = (predict.PredictionWatch(lambda text, silent: send_telegram(text, silent, PAPER_CHAT_ID or None))
              if predict and HEARTBEAT_ROLE != "phone" and predict.PredictionWatch.enabled() else None)
     # 💼 real holdings (private file on the server): its own chat if set, else the 🧪 channel
@@ -1034,6 +1050,12 @@ def main():
             board = scoreboard.Board(lambda tk: _learn._closes(http_get_json, tk), send_telegram)
         except Exception:
             board = None
+    try:
+        import fresh as fresh_mod
+    except ImportError:
+        fresh_mod = None
+    fresh_watch = (fresh_mod.FreshWatch(send_telegram)
+                   if fresh_mod and HEARTBEAT_ROLE != "phone" and fresh_mod.FreshWatch.enabled() else None)
     started = time.time()
     while True:
         battery.check()
@@ -1058,6 +1080,8 @@ def main():
             checks.append(("Options activity", lambda st: opt_watch.check(st, options.market_open_ny())))
         if opt_hist:
             checks.append(("Options history", opt_hist.check))
+        if fresh_watch:
+            checks.append(("Freshness", fresh_watch.check))
         if fda_cal:
             checks.append(("FDA calendar", fda_cal.check))
         if ev_res:

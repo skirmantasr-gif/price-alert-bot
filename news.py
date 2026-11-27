@@ -910,6 +910,12 @@ class NewsWatcher:
             seen[key] = today
             changed = True
             d = item.get("date")
+            if item.get("kind") == "news" and d and d.timestamp() > now.timestamp() - 6 * 3600:
+                try:
+                    import fresh
+                    fresh.beat("News feeds")      # ⏳ a fresh headline arrived
+                except Exception:
+                    pass
             if item.get("kind") == "news" and (not d or d.timestamp() > now.timestamp() - 14 * 86400):
                 # every fresh headline (also first-look, stale and AI-repeat ones): FDA date missed / decided?
                 # Owner 2026-11-22: only SENT items were checked, so SVRA (added after its news) and CAPR stayed open.
