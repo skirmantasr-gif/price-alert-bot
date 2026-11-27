@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 import catalysts
 import marketodds
+import options
 
 TITLE = ("PolyPid Announces FDA Approval of BACFENSSI® (D-PLEX₁₀₀) to Reduce the Occurrence of Surgical Site "
          "Infections in Patients Undergoing Colorectal Surgery")
@@ -47,6 +48,48 @@ class NoOddsAfterDecision(unittest.TestCase):
         self.assertTrue(r["outcome"])
         self.assertFalse(any("Market-implied odds" in x for x in sent))
         self.assertTrue(any("Market odds scored" in x for x in sent))
+
+
+class StaleOptionsFile(unittest.TestCase):
+    CHAIN = {"timestamp": "2026-11-23 15:31:28",
+             "data": {"current_price": 5.91, "iv30": 145.0,
+                      "options": [{"option": "PYPD261218C00005000", "open_interest": 10, "volume": 0, "bid": 1, "ask": 2},
+                                  {"option": "PYPD261218P00005000", "open_interest": 10, "volume": 0, "bid": 1, "ask": 2}]}}
+
+    def _load(self, min_day):
+        import json
+        from unittest import mock
+        with mock.patch.object(options, "_get", lambda url, timeout=20: json.dumps(self.CHAIN).encode()):
+            return options.load("PYPD", min_day)
+
+    def test_old_file_rejected(self):
+        with self.assertRaises(options.Stale):
+            self._load(date(2026, 11, 24))
+        self.assertEqual(self._load(date(2026, 11, 23))[0], 5.91)
+        self.assertEqual(self._load(None)[0], 5.91)
+
+    def test_prev_trading_day(self):
+        self.assertEqual(options.prev_trading_day(date(2026, 11, 27)), date(2026, 11, 25))   # skips Thanksgiving
+        self.assertEqual(options.prev_trading_day(date(2026, 11, 30)), date(2026, 11, 27))   # skips the weekend
+
+    def test_history_retries_after_stale(self):
+        from zoneinfo import ZoneInfo
+        calls = []
+
+        def fetch(sym):
+            calls.append(sym)
+            if len(calls) == 1:
+                raise options.Stale("2026-11-23T15:31:28")
+            return 5.0, 100, [(date(2026, 12, 18), "C", 5.0, 10, 1, 1, 2), (date(2026, 12, 18), "P", 5.0, 10, 1, 1, 2)]
+        now = datetime(2026, 11, 24, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+        w = options.HistoryWatch([], fetch=fetch, now=lambda: now)
+        s = {"_fdacal": {"ev": {"PYPD:2026-11-28": {"t": "PYPD", "date": "2026-11-28"}}}}
+        w.check(s)
+        self.assertEqual(s["_opth"]["PYPD:2026-11-28"]["snaps"], {})      # nothing saved from the old file
+        self.assertFalse(w.check(s))                                         # waits 30 min
+        w.retry_at = float("-inf")
+        self.assertTrue(w.check(s))
+        self.assertIn("2026-11-24", s["_opth"]["PYPD:2026-11-28"]["snaps"])
 
 
 if __name__ == "__main__":
