@@ -57,6 +57,35 @@ def _get(url, timeout=20):
     return data
 
 
+class Stale(Exception):
+    """CBOE served an old file (owner 2026-11-27: PYPD's file said 2026-11-23 15:31 for four days, so 📼 saved the
+    same $5.91 / ±38% snapshot on Nov 23–26 while the stock really went 5.77 → 5.55 → 4.57)."""
+
+
+def data_time(chain):
+    """CBOE's own 'timestamp' (New York time) as a datetime, or None if missing / unreadable."""
+    try:
+        return datetime.strptime(str(chain.get("timestamp"))[:19], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def prev_trading_day(d):
+    d -= timedelta(days=1)
+    while not trading_day(d):
+        d -= timedelta(days=1)
+    return d
+
+
+def load(sym, min_day=None):
+    """Fetch + parse; raises Stale when the file's timestamp is from before `min_day` (no timestamp = accepted)."""
+    chain = json.loads(_get(URL.format(urllib.parse.quote(sym))))
+    ts = data_time(chain)
+    if min_day and ts and ts.date() < min_day:
+        raise Stale(ts.isoformat())
+    return parse(chain)
+
+
 def monthly_expiry(d):
     """Third Friday of d's month, or of the next month if that has passed."""
     for y, m in ((d.year, d.month), (d.year + (d.month == 12), d.month % 12 + 1)):
@@ -145,7 +174,8 @@ def get(sym):
     if hit and time.time() - hit[0] < CACHE_SECONDS:
         return hit[1]
     try:
-        price, iv30, rows = parse(json.loads(_get(URL.format(urllib.parse.quote(sym)))))
+        n = _ny_now()
+        price, iv30, rows = load(sym, prev_trading_day(n.date()) if n else None)   # older than last session = stale
         s = summarize(price, iv30, rows)
         if s is not None:
             s["unusual"] = unusual(rows)
@@ -433,9 +463,10 @@ class HistoryWatch:
 
     def __init__(self, tickers, fetch=None, now=None):
         self.tickers = set(tickers)
-        self.fetch = fetch or (lambda sym: parse(json.loads(_get(URL.format(urllib.parse.quote(sym))))))
+        self.fetch = fetch or (lambda sym: load(sym, self.now().date()))     # a snapshot must be today's data
         self.now = now or _ny_now
         self.last_day = None
+        self.retry_at = float("-inf")
 
     @staticmethod
     def enabled():
@@ -447,7 +478,7 @@ class HistoryWatch:
             return False
         today = n.date()
         day = today.isoformat()
-        if self.last_day == day:
+        if self.last_day == day or time.monotonic() < self.retry_at:
             return False
         self.last_day = day
         h = state.setdefault("_opth", {})
@@ -471,6 +502,9 @@ class HistoryWatch:
                 rec["snaps"][day] = snapshot(price, iv30, rows, today)
                 changed = True
                 log.info("Options history: saved %s (%s days to %s)", rec["t"], (ev - today).days, rec["label"])
+            except Stale:
+                log.info("Options history: %s data is old, retry in 30 min", rec["t"])
+                self.last_day, self.retry_at = None, time.monotonic() + 1800
             except Exception as e:
                 log.info("Options history: %s unavailable (%s)", rec["t"], type(e).__name__)
         if len(h) > HIST_MAX_EVENTS:
